@@ -1,3 +1,4 @@
+import logging
 import threading
 from typing import Callable
 
@@ -6,13 +7,15 @@ from mycli.packages.sqlresult import SQLResult
 from mycli.sqlcompleter import SQLCompleter
 from mycli.sqlexecute import ServerSpecies, SQLExecute
 
+logger = logging.getLogger(__name__)
+
 
 class CompletionRefresher:
-    refreshers: dict = {}
-
     def __init__(self) -> None:
+        self.refreshers: dict = _refresher_registry.copy()
         self._completer_thread: threading.Thread | None = None
         self._restart_refresh = threading.Event()
+        self.current_refresher: str | None = None
 
     def refresh(
         self,
@@ -56,31 +59,17 @@ class CompletionRefresher:
     ) -> None:
         completer = SQLCompleter(**completer_options)
 
-        # Create a new sqlexecute method to populate the completions.
-        e = sqlexecute
-        executor = SQLExecute(
-            e.dbname,
-            e.user,
-            e.password,
-            e.host,
-            e.port,
-            e.socket,
-            e.charset,
-            e.local_infile,
-            e.ssl,
-            e.ssh_user,
-            e.ssh_host,
-            e.ssh_port,
-            e.ssh_password,
-            e.ssh_key_filename,
-        )
+        # Create a lightweight clone that reuses the existing SSH tunnel
+        # instead of opening a full new connection with tunnel setup.
+        executor = sqlexecute.clone_connection()
 
         # If callbacks is a single function then push it into a list.
         if callable(callbacks):
             callbacks = [callbacks]
 
         while 1:
-            for refresher in self.refreshers.values():
+            for name, refresher in self.refreshers.items():
+                self.current_refresher = name
                 refresher(completer, executor)
                 if self._restart_refresh.is_set():
                     self._restart_refresh.clear()
@@ -94,19 +83,24 @@ class CompletionRefresher:
             # break statement.
             continue
 
+        self.current_refresher = None
         for callback in callbacks:
             callback(completer)
 
         executor.close()
 
 
-def refresher(name: str, refreshers: dict = CompletionRefresher.refreshers) -> Callable:
-    """Decorator to add the decorated function to the dictionary of
+# Module-level registry for refresher functions
+_refresher_registry: dict = {}
+
+
+def refresher(name: str) -> Callable:
+    """Decorator to add the decorated function to the registry of
     refreshers. Any function decorated with a @refresher will be executed as
     part of the completion refresh routine."""
 
     def wrapper(wrapped):
-        refreshers[name] = wrapped
+        _refresher_registry[name] = wrapped
         return wrapped
 
     return wrapper
@@ -142,10 +136,37 @@ def refresh_users(completer: SQLCompleter, executor: SQLExecute) -> None:
     completer.extend_users(executor.users())
 
 
-# @refresher('views')
-# def refresh_views(completer: SQLCompleter, executor: SQLExecute) -> None:
-#     completer.extend_relations(executor.views(), kind='views')
-#     completer.extend_columns(executor.view_columns(), kind='views')
+@refresher('views')
+def refresh_views(completer: SQLCompleter, executor: SQLExecute) -> None:
+    # Single JOIN query returns both view names and their columns
+    view_columns_data = list(executor.view_columns())
+    completer.extend_relations(view_columns_data, kind='views')
+    completer.extend_columns(view_columns_data, kind='views')
+
+
+@refresher("other_databases")
+def refresh_other_databases(completer: SQLCompleter, executor: SQLExecute) -> None:
+    """Refresh table and column metadata for all databases (cross-schema completion).
+
+    Uses a single query to fetch schema, table, and column data together,
+    avoiding the overhead of separate table-list and column-list queries.
+    """
+    try:
+        all_columns_data = list(executor.all_table_columns())
+        # Extract unique (schema, table) pairs for relation metadata
+        seen_tables: set[tuple[str, str]] = set()
+        tables_data: list[tuple[str, str]] = []
+        for schema, table, _column in all_columns_data:
+            key = (schema, table)
+            if key not in seen_tables:
+                seen_tables.add(key)
+                tables_data.append((schema, table))
+        completer.extend_relations_with_schema(tables_data, kind="tables")
+        completer.extend_columns_with_schema(all_columns_data, kind="tables")
+    except Exception as e:
+        # May fail due to insufficient privileges on some databases
+        logger.debug("Failed to refresh tables/columns: %r", e)
+        pass
 
 
 @refresher("functions")

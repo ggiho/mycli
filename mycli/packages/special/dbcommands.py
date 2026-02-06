@@ -14,6 +14,14 @@ from mycli.packages.sqlresult import SQLResult
 logger = logging.getLogger(__name__)
 
 
+def _escape_identifier(name: str) -> str:
+    """Escape a MySQL identifier with backticks to prevent SQL injection."""
+    # Strip existing backticks, then escape any internal backticks by doubling them
+    stripped = name.strip('`')
+    escaped = stripped.replace('`', '``')
+    return f'`{escaped}`'
+
+
 @special_command("\\dt", "\\dt[+] [table]", "List or describe tables.", arg_type=ArgType.PARSED_QUERY, case_sensitive=True)
 def list_tables(
     cur: Cursor,
@@ -22,7 +30,8 @@ def list_tables(
     verbose: bool = False,
 ) -> list[SQLResult]:
     if arg:
-        query = f'SHOW FIELDS FROM {arg}'
+        escaped_arg = _escape_identifier(arg)
+        query = f'SHOW FIELDS FROM {escaped_arg}'
     else:
         query = "SHOW TABLES"
     logger.debug(query)
@@ -34,7 +43,8 @@ def list_tables(
         return [SQLResult(status="")]
 
     if verbose and arg:
-        query = f'SHOW CREATE TABLE {arg}'
+        escaped_arg = _escape_identifier(arg)
+        query = f'SHOW CREATE TABLE {escaped_arg}'
         logger.debug(query)
         cur.execute(query)
         if one := cur.fetchone():

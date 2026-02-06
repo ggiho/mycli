@@ -35,7 +35,8 @@ def create_toolbar_tokens_func(mycli, show_fish_help: Callable) -> Callable:
             result.append(("class:bottom-toolbar", "  Right-arrow to complete suggestion"))
 
         if mycli.completion_refresher.is_refreshing():
-            result.append(("class:bottom-toolbar", "     Refreshing completions..."))
+            current = mycli.completion_refresher.current_refresher or 'completions'
+            result.append(("class:bottom-toolbar", f"     Refreshing: {current}..."))
 
         return result
 

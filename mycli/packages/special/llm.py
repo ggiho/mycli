@@ -289,7 +289,7 @@ def sql_using_llm(
         ORDER BY table_name
     """
     tables_query = "SHOW TABLES"
-    sample_row_query = "SELECT * FROM `{table}` LIMIT 1"
+    sample_row_query = "SELECT * FROM `{}` LIMIT 1"
     click.echo("Preparing schema information to feed the llm")
     cur.execute(schema_query)
     db_schema = "\n".join([row[0] for (row,) in cur.fetchall()])
@@ -297,7 +297,7 @@ def sql_using_llm(
     sample_data = {}
     for (table_name,) in cur.fetchall():
         try:
-            cur.execute(sample_row_query.format(table=table_name))
+            cur.execute(sample_row_query.format(table_name.replace('`', '``')))
         except Exception:
             continue
         cols = [desc[0] for desc in cur.description]

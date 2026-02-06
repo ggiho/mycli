@@ -8,12 +8,24 @@ from mycli.packages.parseutils import extract_tables, find_prev_keyword, last_wo
 from mycli.packages.special.main import COMMANDS as SPECIAL_COMMANDS
 from mycli.packages.special.main import parse_special_command
 
-sqlparse.engine.grouping.MAX_GROUPING_DEPTH = None  # type: ignore[assignment]
-sqlparse.engine.grouping.MAX_GROUPING_TOKENS = None  # type: ignore[assignment]
+import mycli.packages.sqlparse_config  # noqa: F401
 
 _ENUM_VALUE_RE = re.compile(
     r"(?P<lhs>(?:`[^`]+`|[\w$]+)(?:\.(?:`[^`]+`|[\w$]+))?)\s*=\s*$",
     re.IGNORECASE,
+)
+
+WINDOW_FUNCTION_KEYWORDS = [
+    'PARTITION BY', 'ORDER BY', 'ROWS', 'RANGE', 'GROUPS',
+    'BETWEEN', 'UNBOUNDED', 'PRECEDING', 'FOLLOWING', 'CURRENT ROW',
+]
+
+# JSON functions that take a path as second parameter
+JSON_FUNCTIONS = (
+    'json_extract', 'json_value', 'json_query', 'json_set',
+    'json_insert', 'json_replace', 'json_remove', 'json_contains_path',
+    'json_unquote', 'json_keys', 'json_search', 'json_contains',
+    'json_array_append', 'json_array_insert',
 )
 
 
@@ -60,6 +72,101 @@ def _is_inside_quotes(text: str, pos: int) -> bool:
             in_double = not in_double
 
     return in_single or in_double
+
+
+def _json_function_path_suggestion(text_before_cursor: str) -> dict[str, Any] | None:
+    """Check if cursor is positioned for a JSON path argument in a JSON function.
+
+    Returns json_path suggestion if we're after the first comma in a JSON function call.
+    e.g., JSON_EXTRACT(column, | or JSON_VALUE(data, |
+    """
+    # Find the last open parenthesis that's not closed
+    paren_depth = 0
+    last_open_paren_pos = -1
+
+    for i in range(len(text_before_cursor) - 1, -1, -1):
+        ch = text_before_cursor[i]
+        if ch == ')':
+            paren_depth += 1
+        elif ch == '(':
+            if paren_depth > 0:
+                paren_depth -= 1
+            else:
+                last_open_paren_pos = i
+                break
+
+    if last_open_paren_pos < 0:
+        return None
+
+    # Get the function name before the parenthesis
+    func_match = re.search(r'(\w+)\s*$', text_before_cursor[:last_open_paren_pos])
+    if not func_match:
+        return None
+
+    func_name = func_match.group(1).lower()
+    if func_name not in JSON_FUNCTIONS:
+        return None
+
+    # Check if there's at least one comma between the open paren and cursor
+    # (meaning we're past the first argument)
+    inside_parens = text_before_cursor[last_open_paren_pos + 1:]
+
+    # Count commas while respecting nested parentheses and quotes
+    comma_count = 0
+    paren_depth = 0
+    in_single = False
+    in_double = False
+    escaped = False
+
+    for ch in inside_parens:
+        if escaped:
+            escaped = False
+            continue
+        if ch == '\\':
+            escaped = True
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            if ch == '(':
+                paren_depth += 1
+            elif ch == ')':
+                paren_depth -= 1
+            elif ch == ',' and paren_depth == 0:
+                comma_count += 1
+
+    if comma_count >= 1:
+        return {"type": "json_path"}
+
+    return None
+
+
+def extract_cte_names(full_text: str) -> list[str]:
+    """Extract CTE names from WITH clauses in the SQL text.
+
+    Handles: WITH cte1 AS (...), cte2 AS (...) SELECT ...
+    """
+    cte_names = []
+    # Match WITH ... AS pattern, handling nested parens
+    cte_pattern = re.compile(
+        r'\bWITH\b\s+(.*?)\bSELECT\b',
+        re.IGNORECASE | re.DOTALL
+    )
+    match = cte_pattern.search(full_text)
+    if not match:
+        return cte_names
+
+    cte_block = match.group(1)
+    # Extract individual CTE names: name AS (...)
+    name_pattern = re.compile(r'(\w+)\s+AS\s*\(', re.IGNORECASE)
+    for m in name_pattern.finditer(cte_block):
+        name = m.group(1)
+        if name.upper() != 'RECURSIVE':
+            cte_names.append(name)
+
+    return cte_names
 
 
 def suggest_type(full_text: str, text_before_cursor: str) -> list[dict[str, Any]]:
@@ -214,8 +321,17 @@ def suggest_based_on_last_token(
 
     if not token:
         return [{"type": "keyword"}, {"type": "special"}]
+    elif token_v in ('->', '->>'):
+        # JSON extraction operators
+        return [{"type": "json_path"}]
     elif token_v == "*":
         return [{"type": "keyword"}]
+    elif token_v == "over(":
+        # Inside OVER() - suggest window clause keywords
+        return [{"type": "keyword_list", "keywords": WINDOW_FUNCTION_KEYWORDS}]
+    elif token_v == "by" and "partition" in text_before_cursor.lower():
+        # After PARTITION BY - suggest columns
+        return [{"type": "column", "tables": extract_tables(full_text)}]
     elif token_v.endswith("("):
         p = sqlparse.parse(text_before_cursor)[0]
 
@@ -316,6 +432,11 @@ def suggest_based_on_last_token(
         # public schema if no schema has been specified
         suggest = [{"type": "table", "schema": schema}]
 
+        # Include CTE names as table suggestions
+        cte_names = extract_cte_names(full_text)
+        if cte_names:
+            suggest.append({"type": "cte", "cte_names": cte_names})
+
         if not schema:
             # Suggest schemas
             suggest.append({"type": "database"})
@@ -367,6 +488,12 @@ def suggest_based_on_last_token(
         return [{"type": "database"}]
 
     elif token_v.endswith(",") or is_operand(token_v) or token_v in ["=", "and", "or"]:
+        # Check if we're inside a JSON function call (after the first argument)
+        if token_v.endswith(","):
+            json_func_suggestion = _json_function_path_suggestion(text_before_cursor)
+            if json_func_suggestion:
+                return [json_func_suggestion]
+
         original_text = text_before_cursor
         prev_keyword, text_before_cursor = find_prev_keyword(text_before_cursor)
         enum_suggestion = _enum_value_suggestion(original_text, full_text)

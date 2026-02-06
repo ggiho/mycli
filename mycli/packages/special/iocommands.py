@@ -25,59 +25,61 @@ from mycli.packages.special.main import execute as special_execute
 from mycli.packages.special.utils import handle_cd_command
 from mycli.packages.sqlresult import SQLResult
 
-sqlparse.engine.grouping.MAX_GROUPING_DEPTH = None  # type: ignore[assignment]
-sqlparse.engine.grouping.MAX_GROUPING_TOKENS = None  # type: ignore[assignment]
+import mycli.packages.sqlparse_config  # noqa: F401
 
-TIMING_ENABLED = False
-use_expanded_output = False
-force_horizontal_output = False
-PAGER_ENABLED = True
-SHOW_FAVORITE_QUERY = True
-tee_file = None
-once_file = None
-written_to_once_file = False
-PIPE_ONCE: dict[str, Any] = {
-    'process': None,
-    'stdin': [],
-    'stdout_file': None,
-    'stdout_mode': None,
-}
-delimiter_command = DelimiterCommand()
-favoritequeries = FavoriteQueries(ConfigObj())
-DESTRUCTIVE_KEYWORDS: list[str] = []
+
+class IOState:
+    """Encapsulates all mutable I/O state that was previously module-level globals."""
+
+    def __init__(self) -> None:
+        self.timing_enabled: bool = False
+        self.expanded_output: bool = False
+        self.force_horizontal: bool = False
+        self.pager_enabled: bool = True
+        self.show_favorite_query: bool = True
+        self.tee_file = None
+        self.once_file = None
+        self.written_to_once_file: bool = False
+        self.pipe_once: dict[str, Any] = {
+            'process': None,
+            'stdin': [],
+            'stdout_file': None,
+            'stdout_mode': None,
+        }
+        self.delimiter_command = DelimiterCommand()
+        self.favorite_queries = FavoriteQueries(ConfigObj())
+        self.destructive_keywords: list[str] = []
+
+
+_state = IOState()
 
 
 def set_favorite_queries(config):
-    global favoritequeries
-    favoritequeries = FavoriteQueries(config)
+    _state.favorite_queries = FavoriteQueries(config)
 
 
 def set_timing_enabled(val: bool) -> None:
-    global TIMING_ENABLED
-    TIMING_ENABLED = val
+    _state.timing_enabled = val
 
 
 def set_pager_enabled(val: bool) -> None:
-    global PAGER_ENABLED
-    PAGER_ENABLED = val
+    _state.pager_enabled = val
 
 
 def is_pager_enabled() -> bool:
-    return PAGER_ENABLED
+    return _state.pager_enabled
 
 
 def set_show_favorite_query(val: bool) -> None:
-    global SHOW_FAVORITE_QUERY
-    SHOW_FAVORITE_QUERY = val
+    _state.show_favorite_query = val
 
 
 def is_show_favorite_query() -> bool:
-    return SHOW_FAVORITE_QUERY
+    return _state.show_favorite_query
 
 
 def set_destructive_keywords(val: list[str]) -> None:
-    global DESTRUCTIVE_KEYWORDS
-    DESTRUCTIVE_KEYWORDS = val
+    _state.destructive_keywords = val
 
 
 @special_command(
@@ -112,33 +114,30 @@ def disable_pager() -> list[SQLResult]:
 
 @special_command("\\timing", "\\t", "Toggle timing of commands.", arg_type=ArgType.NO_QUERY, aliases=["\\t"], case_sensitive=True)
 def toggle_timing() -> list[SQLResult]:
-    global TIMING_ENABLED
-    TIMING_ENABLED = not TIMING_ENABLED
+    _state.timing_enabled = not _state.timing_enabled
     message = "Timing is "
-    message += "on." if TIMING_ENABLED else "off."
+    message += "on." if _state.timing_enabled else "off."
     return [SQLResult(status=message)]
 
 
 def is_timing_enabled() -> bool:
-    return TIMING_ENABLED
+    return _state.timing_enabled
 
 
 def set_expanded_output(val: bool) -> None:
-    global use_expanded_output
-    use_expanded_output = val
+    _state.expanded_output = val
 
 
 def is_expanded_output() -> bool:
-    return use_expanded_output
+    return _state.expanded_output
 
 
 def set_forced_horizontal_output(val: bool) -> None:
-    global force_horizontal_output
-    force_horizontal_output = val
+    _state.force_horizontal = val
 
 
 def forced_horizontal() -> bool:
-    return force_horizontal_output
+    return _state.force_horizontal
 
 
 _logger = logging.getLogger(__name__)
@@ -251,8 +250,8 @@ def copy_query_to_clipboard(sql: str | None = None) -> str | None:
 def set_redirect(command_part: str | None, file_operator_part: str | None, file_part: str | None) -> list[tuple]:
     if command_part:
         if file_part:
-            PIPE_ONCE['stdout_file'] = file_part
-            PIPE_ONCE['stdout_mode'] = 'w' if file_operator_part == '>' else 'a'
+            _state.pipe_once['stdout_file'] = file_part
+            _state.pipe_once['stdout_mode'] = 'w' if file_operator_part == '>' else 'a'
         return set_pipe_once(command_part)
     elif file_operator_part == '>':
         return set_once(f'-o {file_part}')
@@ -408,10 +407,8 @@ def parseargfile(arg: str) -> tuple[str, str]:
 
 @special_command("tee", "tee [-o] filename", "Append all results to an output file (overwrite using -o).")
 def set_tee(arg: str, **_) -> list[SQLResult]:
-    global tee_file
-
     try:
-        tee_file = open(*parseargfile(arg))
+        _state.tee_file = open(*parseargfile(arg))
     except (IOError, OSError) as e:
         raise OSError(f"Cannot write to file '{e.filename}': {e.strerror}") from e
 
@@ -419,10 +416,9 @@ def set_tee(arg: str, **_) -> list[SQLResult]:
 
 
 def close_tee() -> None:
-    global tee_file
-    if tee_file:
-        tee_file.close()
-        tee_file = None
+    if _state.tee_file:
+        _state.tee_file.close()
+        _state.tee_file = None
 
 
 @special_command("notee", "notee", "Stop writing results to an output file.")
@@ -432,46 +428,41 @@ def no_tee(arg: str, **_) -> list[SQLResult]:
 
 
 def write_tee(output: str) -> None:
-    global tee_file
-    if tee_file:
-        click.echo(output, file=tee_file, nl=False)
-        click.echo("\n", file=tee_file, nl=False)
-        tee_file.flush()
+    if _state.tee_file:
+        click.echo(output, file=_state.tee_file, nl=False)
+        click.echo("\n", file=_state.tee_file, nl=False)
+        _state.tee_file.flush()
 
 
 @special_command("\\once", "\\o [-o] filename", "Append next result to an output file (overwrite using -o).", aliases=["\\o"])
 def set_once(arg: str, **_) -> list[SQLResult]:
-    global once_file, written_to_once_file
-
     try:
-        once_file = open(*parseargfile(arg))
+        _state.once_file = open(*parseargfile(arg))
     except (IOError, OSError) as e:
         raise OSError(f"Cannot write to file '{e.filename}': {e.strerror}") from e
-    written_to_once_file = False
+    _state.written_to_once_file = False
 
     return [SQLResult(status="")]
 
 
 def is_redirected() -> bool:
-    return bool(once_file or PIPE_ONCE['process'])
+    return bool(_state.once_file or _state.pipe_once['process'])
 
 
 def write_once(output: str) -> None:
-    global once_file, written_to_once_file
-    if output and once_file:
-        click.echo(output, file=once_file, nl=False)
-        click.echo("\n", file=once_file, nl=False)
-        once_file.flush()
-        written_to_once_file = True
+    if output and _state.once_file:
+        click.echo(output, file=_state.once_file, nl=False)
+        click.echo("\n", file=_state.once_file, nl=False)
+        _state.once_file.flush()
+        _state.written_to_once_file = True
 
 
 def unset_once_if_written(post_redirect_command: str) -> None:
     """Unset the once file, if it has been written to."""
-    global once_file, written_to_once_file
-    if written_to_once_file and once_file:
-        once_filename = once_file.name
-        once_file.close()
-        once_file = None
+    if _state.written_to_once_file and _state.once_file:
+        once_filename = _state.once_file.name
+        _state.once_file.close()
+        _state.once_file = None
         _run_post_redirect_hook(post_redirect_command, once_filename)
 
 
@@ -502,8 +493,8 @@ def set_pipe_once(arg: str, **_) -> list[SQLResult]:
     else:
         # to support chaining
         pipe_once_cmd = ['sh', '-c', arg]
-    PIPE_ONCE['stdin'] = []
-    PIPE_ONCE['process'] = subprocess.Popen(
+    _state.pipe_once['stdin'] = []
+    _state.pipe_once['process'] = subprocess.Popen(
         pipe_once_cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -515,40 +506,40 @@ def set_pipe_once(arg: str, **_) -> list[SQLResult]:
 
 
 def write_pipe_once(line: str) -> None:
-    if line and PIPE_ONCE['process']:
-        PIPE_ONCE['stdin'].append(line)
+    if line and _state.pipe_once['process']:
+        _state.pipe_once['stdin'].append(line)
 
 
 def flush_pipe_once_if_written(post_redirect_command: str) -> None:
     """Flush the pipe_once cmd, if lines have been written."""
-    if not PIPE_ONCE['process']:
+    if not _state.pipe_once['process']:
         return
-    if not PIPE_ONCE['stdin']:
+    if not _state.pipe_once['stdin']:
         return
     try:
-        (stdout_data, stderr_data) = PIPE_ONCE['process'].communicate(input='\n'.join(PIPE_ONCE['stdin']) + '\n', timeout=60)
+        (stdout_data, stderr_data) = _state.pipe_once['process'].communicate(input='\n'.join(_state.pipe_once['stdin']) + '\n', timeout=60)
     except subprocess.TimeoutExpired:
-        PIPE_ONCE['process'].kill()
-        (stdout_data, stderr_data) = PIPE_ONCE['process'].communicate()
+        _state.pipe_once['process'].kill()
+        (stdout_data, stderr_data) = _state.pipe_once['process'].communicate()
     if stdout_data:
-        if PIPE_ONCE['stdout_file']:
-            with open(PIPE_ONCE['stdout_file'], PIPE_ONCE['stdout_mode']) as f:
+        if _state.pipe_once['stdout_file']:
+            with open(_state.pipe_once['stdout_file'], _state.pipe_once['stdout_mode']) as f:
                 print(stdout_data, file=f)
-            _run_post_redirect_hook(post_redirect_command, PIPE_ONCE['stdout_file'])
+            _run_post_redirect_hook(post_redirect_command, _state.pipe_once['stdout_file'])
         else:
             click.secho(stdout_data.rstrip('\n'))
     if stderr_data:
         click.secho(stderr_data.rstrip('\n'), err=True, fg='red')
-    if returncode := PIPE_ONCE['process'].returncode:
-        PIPE_ONCE['process'] = None
-        PIPE_ONCE['stdin'] = []
-        PIPE_ONCE['stdout_file'] = None
-        PIPE_ONCE['stdout_mode'] = None
+    if returncode := _state.pipe_once['process'].returncode:
+        _state.pipe_once['process'] = None
+        _state.pipe_once['stdin'] = []
+        _state.pipe_once['stdout_file'] = None
+        _state.pipe_once['stdout_mode'] = None
         raise OSError(f'process exited with nonzero code {returncode}')
-    PIPE_ONCE['process'] = None
-    PIPE_ONCE['stdin'] = []
-    PIPE_ONCE['stdout_file'] = None
-    PIPE_ONCE['stdout_mode'] = None
+    _state.pipe_once['process'] = None
+    _state.pipe_once['stdin'] = []
+    _state.pipe_once['stdout_file'] = None
+    _state.pipe_once['stdout_mode'] = None
 
 
 @special_command("watch", "watch [seconds] [-c] query", "Executes the query every [seconds] seconds (by default 5).")
@@ -581,7 +572,7 @@ def watch_query(arg: str, **kwargs) -> Generator[SQLResult, None, None]:
             clear_screen = True
             continue
         statement = f"{left_arg} {arg}"
-    destructive_prompt = confirm_destructive_query(DESTRUCTIVE_KEYWORDS, statement)
+    destructive_prompt = confirm_destructive_query(_state.destructive_keywords, statement)
     if destructive_prompt is False:
         click.secho("Wise choice!")
         return
@@ -620,13 +611,13 @@ def watch_query(arg: str, **kwargs) -> Generator[SQLResult, None, None]:
 
 @special_command("delimiter", None, "Change SQL delimiter.")
 def set_delimiter(arg: str, **_) -> list[SQLResult]:
-    return delimiter_command.set(arg)
+    return _state.delimiter_command.set(arg)
 
 
 def get_current_delimiter() -> str:
-    return delimiter_command.current
+    return _state.delimiter_command.current
 
 
 def split_queries(input_str: str) -> Generator[str, None, None]:
-    for query in delimiter_command.queries_iter(input_str):
+    for query in _state.delimiter_command.queries_iter(input_str):
         yield query

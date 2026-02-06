@@ -96,19 +96,32 @@ class SQLExecute:
 
     users_query = """SELECT CONCAT("'", user, "'@'",host,"'") FROM mysql.user"""
 
-    functions_query = '''SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES
-    WHERE ROUTINE_TYPE="FUNCTION" AND ROUTINE_SCHEMA = "%s"'''
+    functions_query = """SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES
+        WHERE ROUTINE_TYPE='FUNCTION' AND ROUTINE_SCHEMA = %s"""
 
-    procedures_query = '''SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES
-    WHERE ROUTINE_TYPE="PROCEDURE" AND ROUTINE_SCHEMA = "%s"'''
+    procedures_query = """SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES
+        WHERE ROUTINE_TYPE='PROCEDURE' AND ROUTINE_SCHEMA = %s"""
 
-    table_columns_query = """select TABLE_NAME, COLUMN_NAME from information_schema.columns
-                                    where table_schema = '%s'
-                                    order by table_name,ordinal_position"""
+    table_columns_query = """SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM information_schema.columns
+        WHERE table_schema = %s
+        ORDER BY table_name, ordinal_position"""
 
-    enum_values_query = """select TABLE_NAME, COLUMN_NAME, COLUMN_TYPE from information_schema.columns
-                                    where table_schema = '%s' and data_type = 'enum'
-                                    order by table_name,ordinal_position"""
+    view_columns_query = """SELECT v.TABLE_NAME, c.COLUMN_NAME, c.COLUMN_TYPE
+        FROM information_schema.views v
+        LEFT JOIN information_schema.columns c
+            ON v.TABLE_SCHEMA = c.TABLE_SCHEMA AND v.TABLE_NAME = c.TABLE_NAME
+        WHERE v.TABLE_SCHEMA = %s
+        ORDER BY v.TABLE_NAME, c.ORDINAL_POSITION"""
+
+    all_columns_query = """SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
+        FROM information_schema.columns
+        WHERE TABLE_SCHEMA NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys')
+        AND TABLE_SCHEMA != %s
+        ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"""
+
+    enum_values_query = """SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM information_schema.columns
+        WHERE table_schema = %s AND data_type = 'enum'
+        ORDER BY table_name, ordinal_position"""
 
     now_query = """SELECT NOW()"""
 
@@ -251,7 +264,7 @@ class SQLExecute:
             ssh_user,
             ssh_host,
             ssh_port,
-            ssh_password,
+            "***" if ssh_password else None,
             ssh_key_filename,
             init_command,
             unbuffered,
@@ -298,9 +311,14 @@ class SQLExecute:
         )  # type: ignore[misc]
 
         if ssh_host:
-            ##### paramiko.Channel is a bad socket implementation overall if you want SSL through an SSH tunnel
-            #####
-            # instead let's open a tunnel and rewrite host:port to local bind
+            # Open an SSH tunnel and rewrite host:port to local bind
+            try:
+                sshtunnel  # noqa: F841 — check if sshtunnel was imported
+            except NameError:
+                raise ImportError(
+                    "SSH tunneling requires the 'paramiko' and 'sshtunnel' packages. "
+                    "Install them with: pip install 'mycli[ssh]'"
+                )
             try:
                 chan = sshtunnel.SSHTunnelForwarder(
                     (ssh_host, ssh_port),
@@ -314,8 +332,8 @@ class SQLExecute:
                 conn.host = chan.local_bind_host
                 conn.port = chan.local_bind_port
                 conn.connect()
-            except Exception as e:
-                raise e
+            except Exception:
+                raise
 
         if self.conn is not None:
             try:
@@ -418,12 +436,33 @@ class SQLExecute:
             for row in cur:
                 yield row
 
-    def table_columns(self) -> Generator[tuple[str, str], None, None]:
-        """Yields (table name, column name) pairs"""
+    def table_columns(self) -> Generator[tuple[str, str, str], None, None]:
+        """Yields (table name, column name, column type) tuples"""
         assert isinstance(self.conn, Connection)
         with self.conn.cursor() as cur:
             _logger.debug("Columns Query. sql: %r", self.table_columns_query)
-            cur.execute(self.table_columns_query % self.dbname)
+            cur.execute(self.table_columns_query, (self.dbname,))
+            for row in cur:
+                yield row
+
+    def view_columns(self) -> Generator[tuple[str, str, str], None, None]:
+        """Yields (view name, column name, column type) tuples via a single JOIN query."""
+        assert isinstance(self.conn, Connection)
+        with self.conn.cursor() as cur:
+            _logger.debug("View Columns Query. sql: %r", self.view_columns_query)
+            cur.execute(self.view_columns_query, (self.dbname,))
+            for row in cur:
+                yield row
+
+    def all_table_columns(self) -> Generator[tuple[str, str, str], None, None]:
+        """Yields (schema_name, table_name, column_name) for all accessible databases.
+
+        Uses a single query instead of separate table + column queries.
+        """
+        assert isinstance(self.conn, Connection)
+        with self.conn.cursor() as cur:
+            _logger.debug("All Columns Query. sql: %r", self.all_columns_query)
+            cur.execute(self.all_columns_query, (self.dbname,))
             for row in cur:
                 yield row
 
@@ -432,7 +471,7 @@ class SQLExecute:
         assert isinstance(self.conn, Connection)
         with self.conn.cursor() as cur:
             _logger.debug("Enum Values Query. sql: %r", self.enum_values_query)
-            cur.execute(self.enum_values_query % self.dbname)
+            cur.execute(self.enum_values_query, (self.dbname,))
             for table_name, column_name, column_type in cur:
                 values = self._parse_enum_values(column_type)
                 if values:
@@ -451,7 +490,7 @@ class SQLExecute:
         assert isinstance(self.conn, Connection)
         with self.conn.cursor() as cur:
             _logger.debug("Functions Query. sql: %r", self.functions_query)
-            cur.execute(self.functions_query % self.dbname)
+            cur.execute(self.functions_query, (self.dbname,))
             for row in cur:
                 yield row
 
@@ -461,7 +500,7 @@ class SQLExecute:
         assert isinstance(self.conn, Connection)
         with self.conn.cursor() as cur:
             _logger.debug("Procedures Query. sql: %r", self.procedures_query)
-            cur.execute(self.procedures_query % self.dbname)
+            cur.execute(self.procedures_query, (self.dbname,))
             for row in cur:
                 yield row
 
@@ -548,9 +587,17 @@ class SQLExecute:
             tls_version = sslp["tls_version"]
 
             if tls_version == "TLSv1":
+                _logger.warning(
+                    "TLS 1.0 is deprecated and has known vulnerabilities. "
+                    "Consider upgrading to TLS 1.2 or higher."
+                )
                 ctx.minimum_version = ssl.TLSVersion.TLSv1
                 ctx.maximum_version = ssl.TLSVersion.TLSv1
             elif tls_version == "TLSv1.1":
+                _logger.warning(
+                    "TLS 1.1 is deprecated and has known vulnerabilities. "
+                    "Consider upgrading to TLS 1.2 or higher."
+                )
                 ctx.minimum_version = ssl.TLSVersion.TLSv1_1
                 ctx.maximum_version = ssl.TLSVersion.TLSv1_1
             elif tls_version == "TLSv1.2":
@@ -563,6 +610,54 @@ class SQLExecute:
                 _logger.error("Invalid tls version: %s", tls_version)
 
         return ctx
+
+    def clone_connection(self) -> 'SQLExecute':
+        """Create a lightweight clone that reuses the same connection parameters.
+
+        Unlike creating a new SQLExecute (which opens a full connection including
+        SSH tunnel), this creates a minimal pymysql connection reusing the
+        resolved host/port from the original (i.e. the SSH tunnel's local bind
+        address if applicable), avoiding the expensive tunnel setup.
+        """
+        assert isinstance(self.conn, Connection)
+        clone = object.__new__(SQLExecute)
+        clone.dbname = self.dbname
+        clone.user = self.user
+        clone.password = self.password
+        clone.host = self.conn.host  # Use resolved host (local tunnel bind if SSH)
+        clone.port = self.conn.port  # Use resolved port (local tunnel port if SSH)
+        clone.socket = self.socket
+        clone.charset = self.charset
+        clone.local_infile = self.local_infile
+        clone.ssl = self.ssl
+        clone.ssh_user = self.ssh_user
+        clone.ssh_host = self.ssh_host
+        clone.ssh_port = self.ssh_port
+        clone.ssh_password = self.ssh_password
+        clone.ssh_key_filename = self.ssh_key_filename
+        clone.init_command = self.init_command
+        clone.unbuffered = self.unbuffered
+        clone.server_info = self.server_info
+        clone.connection_id = None
+
+        # Open a new pymysql connection directly, bypassing SSH tunnel setup
+        conn = pymysql.connect(
+            database=clone.dbname,
+            user=clone.user,
+            password=clone.password or '',
+            host=clone.host,
+            port=clone.port or 0,
+            unix_socket=clone.socket if not self.ssh_host else None,
+            use_unicode=True,
+            charset=clone.charset or '',
+            autocommit=True,
+            local_infile=clone.local_infile or False,
+            ssl=self._create_ssl_ctx(clone.ssl) if clone.ssl else None,
+            program_name="mycli",
+        )
+        clone.conn = conn
+        clone.reset_connection_id()
+        return clone
 
     def close(self) -> None:
         if self.conn is not None:

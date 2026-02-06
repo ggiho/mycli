@@ -18,7 +18,20 @@ from mycli.packages.special import llm
 from mycli.packages.special.favoritequeries import FavoriteQueries
 from mycli.packages.special.main import COMMANDS as SPECIAL_COMMANDS
 
+# Pre-compiled regex for camelCase boundary detection (used in hot loop find_matches)
+_CASE_CHANGE_RE = re.compile("(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
 _logger = logging.getLogger(__name__)
+
+# Common JSON path patterns for autocompletion
+JSON_PATH_SUGGESTIONS = [
+    ("'$'", "JSON root"),
+    ("'$.'", "object property accessor"),
+    ("'$[*]'", "all array elements"),
+    ("'$[0]'", "first array element"),
+    ("'$.key'", "property access example"),
+    ("'$**.key'", "recursive descent"),
+]
 
 
 class Fuzziness(IntEnum):
@@ -787,7 +800,7 @@ class SQLCompleter(Completer):
         supported_formats: tuple = (),
         keyword_casing: str = "auto",
     ) -> None:
-        super(self.__class__, self).__init__()
+        super().__init__()
         self.smart_completion = smart_completion
         self.reserved_words = set()
         for x in self.keywords:
@@ -858,10 +871,10 @@ class SQLCompleter(Completer):
             metadata[schema] = {}
         self.all_completions.update(schema)
 
-    def extend_relations(self, data: list[tuple[str, str]], kind: Literal['tables', 'views']) -> None:
+    def extend_relations(self, data: list[tuple[str, ...]], kind: Literal['tables', 'views']) -> None:
         """Extend metadata for tables or views
 
-        :param data: list of (rel_name, ) tuples
+        :param data: list of (rel_name, ...) tuples
         :param kind: either 'tables' or 'views'
         :return:
         """
@@ -877,17 +890,20 @@ class SQLCompleter(Completer):
                 _logger.error("%r %r listed in unrecognized schema %r", kind, relname[0], self.dbname)
             self.all_completions.add(relname[0])
 
-    def extend_columns(self, column_data: list[tuple[str, str]], kind: Literal['tables', 'views']) -> None:
+    def extend_columns(self, column_data: list[tuple[str, ...]], kind: Literal['tables', 'views']) -> None:
         """Extend column metadata
 
-        :param column_data: list of (rel_name, column_name) tuples
+        :param column_data: list of (rel_name, column_name[, column_type]) tuples
         :param kind: either 'tables' or 'views'
         :return:
         """
-        column_data_ll = [self.escaped_names(d) for d in column_data]
-
         metadata = self.dbmetadata[kind]
-        for relname, column in column_data_ll:
+        for item in column_data:
+            # Extract raw type before escaping (escape_name would mangle type strings)
+            col_type = item[2] if len(item) > 2 else None
+            escaped = self.escaped_names(item[:2])
+            relname = escaped[0]
+            column = escaped[1]
             if relname not in metadata[self.dbname]:
                 _logger.error("relname '%s' was not found in db '%s'", relname, self.dbname)
                 # this could happen back when the completer populated via two calls:
@@ -897,6 +913,42 @@ class SQLCompleter(Completer):
                 continue
             metadata[self.dbname][relname].append(column)
             self.all_completions.add(column)
+            if col_type:
+                self.column_types[column] = col_type
+
+    def extend_relations_with_schema(self, data: list[tuple[str, str]], kind: Literal['tables', 'views']) -> None:
+        """Extend metadata for tables/views with explicit schema names.
+
+        :param data: list of (schema_name, rel_name) tuples
+        :param kind: either 'tables' or 'views'
+        """
+        metadata = self.dbmetadata[kind]
+        for schema, relname in data:
+            escaped_relname = self.escape_name(relname)
+            if schema not in metadata:
+                metadata[schema] = {}
+            if escaped_relname not in metadata[schema]:
+                metadata[schema][escaped_relname] = ['*']
+            self.all_completions.add(escaped_relname)
+
+    def extend_columns_with_schema(self, column_data: list[tuple[str, str, str]], kind: Literal['tables', 'views']) -> None:
+        """Extend column metadata with explicit schema names.
+
+        :param column_data: list of (schema_name, rel_name, column_name) tuples
+        :param kind: either 'tables' or 'views'
+        """
+        metadata = self.dbmetadata[kind]
+        for schema, relname, column in column_data:
+            escaped_relname = self.escape_name(relname)
+            escaped_column = self.escape_name(column)
+            if schema not in metadata:
+                metadata[schema] = {}
+            if escaped_relname not in metadata[schema]:
+                metadata[schema][escaped_relname] = []
+            elif metadata[schema][escaped_relname] == ['*']:
+                metadata[schema][escaped_relname] = []
+            metadata[schema][escaped_relname].append(escaped_column)
+            self.all_completions.add(escaped_column)
 
     def extend_enum_values(self, enum_data: Iterable[tuple[str, str, list[str]]]) -> None:
         metadata = self.dbmetadata["enum_values"]
@@ -922,7 +974,8 @@ class SQLCompleter(Completer):
         # prevent crashing.
         try:
             func_data_ll = [self.escaped_names(d) for d in func_data]
-        except Exception:
+        except Exception as e:
+            _logger.debug("escaped_names failed: %r", e)
             func_data_ll = []
 
         # dbmetadata['functions'][$schema_name][$function_name] should return
@@ -956,6 +1009,7 @@ class SQLCompleter(Completer):
             "procedures": {},
             "enum_values": {},
         }
+        self.column_types: dict[str, str] = {}  # column_name -> column_type
         self.all_completions = set(self.keywords + self.functions)
 
     @staticmethod
@@ -981,8 +1035,7 @@ class SQLCompleter(Completer):
         """
         last = last_word(orig_text, include="most_punctuations")
         text = last.lower()
-        # unicode support not possible without adding the regex dependency
-        case_change_pat = re.compile("(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+        case_change_pat = _CASE_CHANGE_RE
 
         completions: list[tuple[str, int]] = []
 
@@ -1140,6 +1193,16 @@ class SQLCompleter(Completer):
                 views_m = self.find_matches(word_before_cursor, views)
                 completions.extend([(*x, rank) for x in views_m])
 
+            elif suggestion["type"] == "cte":
+                cte_names = suggestion["cte_names"]
+                cte_m = self.find_matches(word_before_cursor, cte_names)
+                completions.extend([(*x, rank) for x in cte_m])
+
+            elif suggestion["type"] == "keyword_list":
+                keywords = suggestion["keywords"]
+                kw_m = self.find_matches(word_before_cursor, keywords, casing=self.keyword_casing)
+                completions.extend([(*x, rank) for x in kw_m])
+
             elif suggestion["type"] == "alias":
                 aliases = suggestion["aliases"]
                 aliases_m = self.find_matches(word_before_cursor, aliases)
@@ -1210,6 +1273,10 @@ class SQLCompleter(Completer):
                     completions = [(*x, rank) for x in self.find_matches(word_before_cursor, quoted_values)]
                     break
 
+            elif suggestion["type"] == "json_path":
+                json_paths = self.suggest_json_paths(word_before_cursor)
+                completions.extend([(*x, rank) for x in json_paths])
+
         def completion_sort_key(item: tuple[str, int, int], text_for_len: str):
             candidate, fuzziness, rank = item
             if not text_for_len:
@@ -1228,7 +1295,13 @@ class SQLCompleter(Completer):
             sorted_completions = sorted(completions, key=lambda item: completion_sort_key(item, text_for_len.lower()))
             uniq_completions_str = dict.fromkeys(x[0] for x in sorted_completions)
 
-        return (Completion(x, -len(text_for_len)) for x in uniq_completions_str)
+        def make_completion(text: str) -> Completion:
+            meta = self.column_types.get(text) or self.column_types.get(text.strip('`'))
+            if meta:
+                return Completion(text, -len(text_for_len), display_meta=meta)
+            return Completion(text, -len(text_for_len))
+
+        return (make_completion(x) for x in uniq_completions_str)
 
     def find_files(self, word: str) -> Generator[tuple[str, int], None, None]:
         """Yield matching directory or file names.
@@ -1245,6 +1318,21 @@ class SQLCompleter(Completer):
             suggestion = complete_path(name, last_path)
             if suggestion:
                 yield (suggestion, Fuzziness.PERFECT)
+
+    def suggest_json_paths(self, word_before_cursor: str) -> Generator[tuple[str, int], None, None]:
+        """Suggest common JSON path patterns for MySQL JSON functions.
+
+        :param word_before_cursor: text typed so far
+        :return: generator of (path, fuzziness) tuples
+        """
+        # Get the partial text after any quotes that might have been started
+        partial = word_before_cursor.lstrip("'\"")
+
+        for path, _meta in JSON_PATH_SUGGESTIONS:
+            # Strip quotes for matching
+            path_content = path.strip("'")
+            if not partial or path_content.startswith(partial) or partial.startswith("$"):
+                yield (path, Fuzziness.PERFECT)
 
     def populate_scoped_cols(self, scoped_tbls: list[tuple[str | None, str, str | None]]) -> list[str]:
         """Find all columns in a set of scoped_tables
