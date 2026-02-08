@@ -27,6 +27,10 @@ from mycli.packages.sqlresult import SQLResult
 
 import mycli.packages.sqlparse_config  # noqa: F401
 
+# Pre-compiled regex patterns for editor and clip command stripping
+_EDITOR_CMD_RE = re.compile(r"(^\\e|\\e$)")
+_CLIP_CMD_RE = re.compile(r"(^\\clip|\\clip$)")
+
 
 class IOState:
     """Encapsulates all mutable I/O state that was previously module-level globals."""
@@ -168,9 +172,8 @@ def get_editor_query(sql: str) -> str:
     # The reason we can't simply do .strip('\e') is that it strips characters,
     # not a substring. So it'll strip "e" in the end of the sql also!
     # Ex: "select * from style\e" -> "select * from styl".
-    pattern = re.compile(r"(^\\e|\\e$)")
-    while pattern.search(sql):
-        sql = pattern.sub("", sql)
+    while _EDITOR_CMD_RE.search(sql):
+        sql = _EDITOR_CMD_RE.sub("", sql)
 
     return sql
 
@@ -226,9 +229,8 @@ def get_clip_query(sql: str) -> str:
 
     # The reason we can't simply do .strip('\clip') is that it strips characters,
     # not a substring. So it'll strip "c" in the end of the sql also!
-    pattern = re.compile(r"(^\\clip|\\clip$)")
-    while pattern.search(sql):
-        sql = pattern.sub("", sql)
+    while _CLIP_CMD_RE.search(sql):
+        sql = _CLIP_CMD_RE.sub("", sql)
 
     return sql
 

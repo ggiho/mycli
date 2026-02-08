@@ -85,7 +85,8 @@ class CLILoopMixin:
                 raise RuntimeError(message)
             while True:
                 try:
-                    assert isinstance(self.prompt_app, PromptSession)
+                    if self.prompt_app is None:
+                        raise RuntimeError("Prompt application not initialized")
                     text = self.prompt_app.prompt(default=sql)
                     break
                 except KeyboardInterrupt:
@@ -144,7 +145,8 @@ class CLILoopMixin:
     def run_cli(self) -> None:
         iterations = 0
         sqlexecute: 'SQLExecute' = self.sqlexecute
-        assert sqlexecute is not None
+        if sqlexecute is None:
+            raise RuntimeError("SQLExecute instance not initialized")
         logger = self.logger
         self.configure_pager()
 
@@ -292,7 +294,8 @@ class CLILoopMixin:
             successful = False
             if text is None:
                 try:
-                    assert self.prompt_app is not None
+                    if self.prompt_app is None:
+                        raise RuntimeError("Prompt application not initialized")
                     text = self.prompt_app.prompt()
                 except KeyboardInterrupt:
                     return
@@ -320,7 +323,8 @@ class CLILoopMixin:
                 while special.is_llm_command(text):
                     start = time()
                     try:
-                        assert sqlexecute.conn is not None
+                        if sqlexecute.conn is None:
+                            raise RuntimeError("Database connection not established")
                         cur = sqlexecute.conn.cursor()
                         context, sql, duration = special.handle_llm(text, cur)
                         if context:
@@ -409,6 +413,17 @@ class CLILoopMixin:
                             return
                         # Retry the query after successful reconnect
                         continue
+                    except pymysql.OperationalError as e1:
+                        logger.debug("Exception: %r", e1)
+                        if e1.args[0] in (2003, 2006, 2013):
+                            # attempt to reconnect
+                            if attempt >= max_reconnect_attempts or not self.reconnect():
+                                return
+                            # Retry the query after successful reconnect
+                            continue
+                        else:
+                            # Re-raise for outer handler to deal with non-reconnectable errors
+                            raise
             except EOFError:
                 raise
             except KeyboardInterrupt:
@@ -440,17 +455,11 @@ class CLILoopMixin:
             except NotImplementedError:
                 self.echo("Not Yet Implemented.", fg="yellow")
             except pymysql.OperationalError as e1:
-                logger.debug("Exception: %r", e1)
-                if e1.args[0] in (2003, 2006, 2013):
-                    # attempt to reconnect
-                    if not self.reconnect():
-                        return
-                    one_iteration(text)
-                    return  # OK to just return, cuz the recursion call runs to the end.
-                else:
-                    logger.error("sql: %r, error: %r", text, e1)
-                    logger.error("traceback: %r", traceback.format_exc())
-                    self.echo(str(e1), err=True, fg="red")
+                # Only non-reconnectable OperationalErrors reach here
+                # (reconnectable ones are handled in retry loop)
+                logger.error("sql: %r, error: %r", text, e1)
+                logger.error("traceback: %r", traceback.format_exc())
+                self.echo(str(e1), err=True, fg="red")
             except Exception as e:
                 logger.error("sql: %r, error: %r", text, e)
                 logger.error("traceback: %r", traceback.format_exc())

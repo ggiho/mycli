@@ -14,6 +14,13 @@ _ENUM_VALUE_RE = re.compile(
     r"(?P<lhs>(?:`[^`]+`|[\w$]+)(?:\.(?:`[^`]+`|[\w$]+))?)\s*=\s*$",
     re.IGNORECASE,
 )
+# Pre-compiled patterns for extract_cte_names (called during query parsing)
+_CTE_PATTERN_RE = re.compile(r'\bWITH\b\s+(.*?)\bSELECT\b', re.IGNORECASE | re.DOTALL)
+_CTE_NAME_PATTERN_RE = re.compile(r'(\w+)\s+AS\s*\(', re.IGNORECASE)
+# Pre-compiled pattern for JSON function detection
+_FUNC_NAME_RE = re.compile(r'(\w+)\s*$')
+# Pre-compiled pattern for CREATE TABLE LIKE detection
+_CREATE_TABLE_LIKE_RE = re.compile(r'^\s*create\s+table\s', re.IGNORECASE)
 
 WINDOW_FUNCTION_KEYWORDS = [
     'PARTITION BY', 'ORDER BY', 'ROWS', 'RANGE', 'GROUPS',
@@ -99,7 +106,7 @@ def _json_function_path_suggestion(text_before_cursor: str) -> dict[str, Any] | 
         return None
 
     # Get the function name before the parenthesis
-    func_match = re.search(r'(\w+)\s*$', text_before_cursor[:last_open_paren_pos])
+    func_match = _FUNC_NAME_RE.search(text_before_cursor[:last_open_paren_pos])
     if not func_match:
         return None
 
@@ -150,18 +157,13 @@ def extract_cte_names(full_text: str) -> list[str]:
     """
     cte_names = []
     # Match WITH ... AS pattern, handling nested parens
-    cte_pattern = re.compile(
-        r'\bWITH\b\s+(.*?)\bSELECT\b',
-        re.IGNORECASE | re.DOTALL
-    )
-    match = cte_pattern.search(full_text)
+    match = _CTE_PATTERN_RE.search(full_text)
     if not match:
         return cte_names
 
     cte_block = match.group(1)
     # Extract individual CTE names: name AS (...)
-    name_pattern = re.compile(r'(\w+)\s+AS\s*\(', re.IGNORECASE)
-    for m in name_pattern.finditer(cte_block):
+    for m in _CTE_NAME_PATTERN_RE.finditer(cte_block):
         name = m.group(1)
         if name.upper() != 'RECURSIVE':
             cte_names.append(name)
@@ -424,7 +426,7 @@ def suggest_based_on_last_token(
         or (token_v in ("copy", "from", "update", "into", "describe", "truncate", "desc", "explain"))
         # todo: the create table regex fails to match on multi-statement queries, which
         # suggests a bug above in suggest_type()
-        or (token_v == "like" and re.match(r'^\s*create\s+table\s', full_text, re.IGNORECASE))
+        or (token_v == "like" and _CREATE_TABLE_LIKE_RE.match(full_text))
     ):
         schema = (identifier and identifier.get_parent_name()) or []
 

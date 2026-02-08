@@ -298,7 +298,8 @@ class MyCli(OutputMixin, ConnectionMixin, CLILoopMixin):
             click.secho("No database selected", err=True, fg="red")
             return
 
-        assert isinstance(self.sqlexecute, SQLExecute)
+        if self.sqlexecute is None:
+            raise RuntimeError("SQLExecute instance not initialized")
 
         if self.sqlexecute.dbname == arg:
             msg = f'You are already connected to database "{self.sqlexecute.dbname}" as user "{self.sqlexecute.user}"'
@@ -322,7 +323,8 @@ class MyCli(OutputMixin, ConnectionMixin, CLILoopMixin):
             message = "Wise choice. Command execution stopped."
             return [SQLResult(status=message)]
 
-        assert isinstance(self.sqlexecute, SQLExecute)
+        if self.sqlexecute is None:
+            raise RuntimeError("SQLExecute instance not initialized")
         return self.sqlexecute.run(query)
 
     def change_prompt_format(self, arg: str, **_) -> list[SQLResult]:

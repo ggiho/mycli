@@ -53,10 +53,10 @@ def run_external_cmd(
         code = 0
         if capture_output:
             buffer = io.StringIO()
-            redirect: contextlib.ExitStack[bool | None] | contextlib.nullcontext[None] = contextlib.ExitStack()
-            assert isinstance(redirect, contextlib.ExitStack)
-            redirect.enter_context(contextlib.redirect_stdout(buffer))
-            redirect.enter_context(contextlib.redirect_stderr(buffer))
+            redirect_stack = contextlib.ExitStack()
+            redirect_stack.enter_context(contextlib.redirect_stdout(buffer))
+            redirect_stack.enter_context(contextlib.redirect_stderr(buffer))
+            redirect: contextlib.AbstractContextManager = redirect_stack
         else:
             redirect = contextlib.nullcontext()
         with redirect:
@@ -85,16 +85,14 @@ def run_external_cmd(
 
 
 def _build_command_tree(cmd) -> dict[str, Any] | None:
-    tree: dict[str, Any] | None = {}
-    assert isinstance(tree, dict)
-    if isinstance(cmd, click.Group):
-        for name, subcmd in cmd.commands.items():
-            if cmd.name == "models" and name == "default":
-                tree[name] = {x.model_id: None for x in llm.get_models()}
-            else:
-                tree[name] = _build_command_tree(subcmd)
-    else:
-        tree = None
+    if not isinstance(cmd, click.Group):
+        return None
+    tree: dict[str, Any] = {}
+    for name, subcmd in cmd.commands.items():
+        if cmd.name == "models" and name == "default":
+            tree[name] = {x.model_id: None for x in llm.get_models()}
+        else:
+            tree[name] = _build_command_tree(subcmd)
     return tree
 
 

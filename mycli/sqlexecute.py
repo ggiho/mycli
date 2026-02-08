@@ -20,8 +20,10 @@ from mycli.packages.sqlresult import SQLResult
 try:
     import paramiko  # noqa: F401
     import sshtunnel
+    SSH_AVAILABLE = True
 except ImportError:
-    pass
+    SSH_AVAILABLE = False
+    sshtunnel = None  # type: ignore
 
 _logger = logging.getLogger(__name__)
 
@@ -201,6 +203,19 @@ class SQLExecute:
         self.conn: Connection | None = None
         self.connect()
 
+    def _ensure_connected(self) -> Connection:
+        """Ensure database connection is established.
+
+        Raises:
+            RuntimeError: If database connection is not established.
+
+        Returns:
+            Connection: The active database connection.
+        """
+        if self.conn is None:
+            raise RuntimeError("Database connection not established")
+        return self.conn
+
     def connect(
         self,
         database: str | None = None,
@@ -312,12 +327,10 @@ class SQLExecute:
 
         if ssh_host:
             # Open an SSH tunnel and rewrite host:port to local bind
-            try:
-                sshtunnel  # noqa: F841 — check if sshtunnel was imported
-            except NameError:
-                raise ImportError(
-                    "SSH tunneling requires the 'paramiko' and 'sshtunnel' packages. "
-                    "Install them with: pip install 'mycli[ssh]'"
+            if not SSH_AVAILABLE:
+                raise RuntimeError(
+                    "SSH tunnel requested but paramiko/sshtunnel not installed. "
+                    "Install with: pip install 'mycli[ssh]'"
                 )
             try:
                 chan = sshtunnel.SSHTunnelForwarder(
@@ -388,8 +401,8 @@ class SQLExecute:
                 iocommands.set_forced_horizontal_output(True)
                 sql = sql[:-2].strip()
 
-            assert isinstance(self.conn, Connection)
-            cur = self.conn.cursor()
+            conn = self._ensure_connected()
+            cur = conn.cursor()
             try:  # Special command
                 _logger.debug("Trying a dbspecial command. sql: %r", sql)
                 for result in execute(cur, sql):
@@ -429,8 +442,8 @@ class SQLExecute:
     def tables(self) -> Generator[tuple[str], None, None]:
         """Yields table names"""
 
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("Tables Query. sql: %r", self.tables_query)
             cur.execute(self.tables_query)
             for row in cur:
@@ -438,8 +451,8 @@ class SQLExecute:
 
     def table_columns(self) -> Generator[tuple[str, str, str], None, None]:
         """Yields (table name, column name, column type) tuples"""
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("Columns Query. sql: %r", self.table_columns_query)
             cur.execute(self.table_columns_query, (self.dbname,))
             for row in cur:
@@ -447,8 +460,8 @@ class SQLExecute:
 
     def view_columns(self) -> Generator[tuple[str, str, str], None, None]:
         """Yields (view name, column name, column type) tuples via a single JOIN query."""
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("View Columns Query. sql: %r", self.view_columns_query)
             cur.execute(self.view_columns_query, (self.dbname,))
             for row in cur:
@@ -459,8 +472,8 @@ class SQLExecute:
 
         Uses a single query instead of separate table + column queries.
         """
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("All Columns Query. sql: %r", self.all_columns_query)
             cur.execute(self.all_columns_query, (self.dbname,))
             for row in cur:
@@ -468,8 +481,8 @@ class SQLExecute:
 
     def enum_values(self) -> Generator[tuple[str, str, list[str]], None, None]:
         """Yields (table name, column name, enum values) tuples"""
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("Enum Values Query. sql: %r", self.enum_values_query)
             cur.execute(self.enum_values_query, (self.dbname,))
             for table_name, column_name, column_type in cur:
@@ -478,8 +491,8 @@ class SQLExecute:
                     yield (table_name, column_name, values)
 
     def databases(self) -> list[str]:
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("Databases Query. sql: %r", self.databases_query)
             cur.execute(self.databases_query)
             return [x[0] for x in cur.fetchall()]
@@ -487,8 +500,8 @@ class SQLExecute:
     def functions(self) -> Generator[tuple[str, str], None, None]:
         """Yields tuples of (schema_name, function_name)"""
 
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("Functions Query. sql: %r", self.functions_query)
             cur.execute(self.functions_query, (self.dbname,))
             for row in cur:
@@ -497,16 +510,16 @@ class SQLExecute:
     def procedures(self) -> Generator[tuple[str, str], None, None]:
         """Yields tuples of (procedure_name, )"""
 
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("Procedures Query. sql: %r", self.procedures_query)
             cur.execute(self.procedures_query, (self.dbname,))
             for row in cur:
                 yield row
 
     def show_candidates(self) -> Generator[tuple, None, None]:
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("Show Query. sql: %r", self.show_candidates_query)
             try:
                 cur.execute(self.show_candidates_query)
@@ -518,8 +531,8 @@ class SQLExecute:
                     yield (row[0].split(None, 1)[-1],)
 
     def users(self) -> Generator[tuple, None, None]:
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("Users Query. sql: %r", self.users_query)
             try:
                 cur.execute(self.users_query)
@@ -531,8 +544,8 @@ class SQLExecute:
                     yield row
 
     def now(self) -> datetime.datetime:
-        assert isinstance(self.conn, Connection)
-        with self.conn.cursor() as cur:
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
             _logger.debug("Now Query. sql: %r", self.now_query)
             cur.execute(self.now_query)
             if one := cur.fetchone():
@@ -565,8 +578,8 @@ class SQLExecute:
             _logger.debug("Current connection id: %s", self.connection_id)
 
     def change_db(self, db: str) -> None:
-        assert isinstance(self.conn, Connection)
-        self.conn.select_db(db)
+        conn = self._ensure_connected()
+        conn.select_db(db)
         self.dbname = db
 
     def _create_ssl_ctx(self, sslp: dict) -> ssl.SSLContext:
@@ -619,13 +632,13 @@ class SQLExecute:
         resolved host/port from the original (i.e. the SSH tunnel's local bind
         address if applicable), avoiding the expensive tunnel setup.
         """
-        assert isinstance(self.conn, Connection)
+        conn = self._ensure_connected()
         clone = object.__new__(SQLExecute)
         clone.dbname = self.dbname
         clone.user = self.user
         clone.password = self.password
-        clone.host = self.conn.host  # Use resolved host (local tunnel bind if SSH)
-        clone.port = self.conn.port  # Use resolved port (local tunnel port if SSH)
+        clone.host = conn.host  # Use resolved host (local tunnel bind if SSH)
+        clone.port = conn.port  # Use resolved port (local tunnel port if SSH)
         clone.socket = self.socket
         clone.charset = self.charset
         clone.local_infile = self.local_infile

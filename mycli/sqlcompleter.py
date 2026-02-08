@@ -18,8 +18,10 @@ from mycli.packages.special import llm
 from mycli.packages.special.favoritequeries import FavoriteQueries
 from mycli.packages.special.main import COMMANDS as SPECIAL_COMMANDS
 
-# Pre-compiled regex for camelCase boundary detection (used in hot loop find_matches)
+# Pre-compiled regex patterns for hot path operations
 _CASE_CHANGE_RE = re.compile("(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_DIGIT_START_RE = re.compile(r'^[\d\.]')
+_NAME_PATTERN_RE = re.compile(r"^[_a-zA-Z][_a-zA-Z0-9\$]*$")
 
 _logger = logging.getLogger(__name__)
 
@@ -805,7 +807,7 @@ class SQLCompleter(Completer):
         self.reserved_words = set()
         for x in self.keywords:
             self.reserved_words.update(x.split())
-        self.name_pattern = re.compile(r"^[_a-zA-Z][_a-zA-Z0-9\$]*$")
+        self.name_pattern = _NAME_PATTERN_RE
 
         self.special_commands: list[str] = []
         self.table_formats = supported_formats
@@ -1043,14 +1045,14 @@ class SQLCompleter(Completer):
             for item in []:
                 yield item
 
-        if re.match(r'^[\d\.]', text):
+        if _DIGIT_START_RE.match(text):
             return empty_generator()
 
         if fuzzy:
             regex = ".{0,3}?".join(map(re.escape, text))
             pat = re.compile(f'({regex})')
             under_words_text = [x for x in text.split('_') if x]
-            case_words_text = re.split(case_change_pat, last)
+            case_words_text = case_change_pat.split(last)
 
             for item in collection:
                 r = pat.search(item.lower())
@@ -1069,7 +1071,7 @@ class SQLCompleter(Completer):
                     completions.append((item, Fuzziness.UNDER_WORDS))
                     continue
 
-                case_words_item = re.split(case_change_pat, item)
+                case_words_item = case_change_pat.split(item)
                 occurrences = 0
                 for elt_word in case_words_text:
                     for elt_item in case_words_item:
