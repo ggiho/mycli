@@ -12,6 +12,51 @@ Documentation: [http://mycli.net/docs](http://mycli.net/docs)
 
 Postgres Equivalent: [http://pgcli.com](http://pgcli.com)
 
+---
+
+## Enhanced Version (ggiho/mycli)
+
+This is an enhanced fork with the following improvements:
+
+### New Features
+- **JSON Path Autocompletion**: `->`, `->>`, `JSON_EXTRACT()` 등에서 JSON 경로 자동완성
+- **CTE (WITH clause) Autocompletion**: CTE 이름 자동완성 지원
+- **Window Function Autocompletion**: `OVER()` 내 `PARTITION BY`, `ORDER BY` 등 자동완성
+- **Column Type Hints**: 자동완성 시 컬럼 타입 표시
+
+### Improvements
+- **Architecture**: MyCli God Class를 3개 mixin으로 분리
+- **Performance**: 메타데이터 쿼리 병합, 커넥션 재사용
+- **Security**: SQL Injection 방지, 비밀번호 마스킹, LLM 위험 SQL 경고
+- **UX**: 메타데이터 리프레시 진행 표시, SSH 에러 메시지 개선
+
+### Installation with uv (Recommended)
+
+```bash
+# 전역 설치 (편집 가능 모드)
+uv tool install -e git+https://github.com/ggiho/mycli.git
+
+# 또는 로컬 클론 후 설치
+git clone https://github.com/ggiho/mycli.git
+cd mycli
+uv tool install -e .
+```
+
+### Development Setup
+
+```bash
+git clone https://github.com/ggiho/mycli.git
+cd mycli
+uv venv
+uv pip install -e ".[ssh,llm]"
+source .venv/bin/activate
+mycli -u root
+```
+
+자세한 개발 가이드는 [DEVELOPMENT.md](DEVELOPMENT.md)를 참조하세요.
+
+---
+
 Quick Start
 -----------
 
