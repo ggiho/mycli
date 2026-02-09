@@ -8,7 +8,6 @@ from time import time
 from typing import TYPE_CHECKING, Generator
 
 import click
-import sqlglot
 import pymysql
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import DynamicCompleter
@@ -113,6 +112,8 @@ class CLILoopMixin:
         return False
 
     def handle_prettify_binding(self, text: str) -> str:
+        import sqlglot  # Lazy import - only loaded when prettify is triggered
+
         try:
             statements = sqlglot.parse(text, read="mysql")
         except Exception as e:
@@ -128,6 +129,8 @@ class CLILoopMixin:
         return pretty_text
 
     def handle_unprettify_binding(self, text: str) -> str:
+        import sqlglot  # Lazy import - only loaded when unprettify is triggered
+
         try:
             statements = sqlglot.parse(text, read="mysql")
         except Exception as e:

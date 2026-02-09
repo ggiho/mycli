@@ -9,7 +9,6 @@ import sys
 from typing import IO, BinaryIO, Literal
 
 from configobj import ConfigObj, ConfigObjError
-from Cryptodome.Cipher import AES
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +97,129 @@ def read_config_files(files: list[str | IO[str]], list_values: bool = True) -> C
     return config
 
 
+# Configuration validation schema
+# Format: {key: (type, allowed_values_or_range, default)}
+CONFIG_SCHEMA = {
+    'main': {
+        # Boolean options (validated by as_bool())
+        'show_warnings': ('bool', None, 'False'),
+        'smart_completion': ('bool', None, 'True'),
+        'include_system_schemas': ('bool', None, 'False'),
+        'multi_line': ('bool', None, 'False'),
+        'destructive_warning': ('bool', None, 'True'),
+        'timing': ('bool', None, 'True'),
+        'show_favorite_query': ('bool', None, 'True'),
+        'less_chatty': ('bool', None, 'False'),
+        'wider_completion_menu': ('bool', None, 'False'),
+        'login_path_as_host': ('bool', None, 'False'),
+        'auto_vertical_output': ('bool', None, 'False'),
+        'enable_pager': ('bool', None, 'True'),
+
+        # Numeric options
+        'beep_after_seconds': ('float', (0, None), '0'),
+
+        # Enum options
+        'ssl_mode': ('enum', ['auto', 'on', 'off'], 'auto'),
+        'keyword_casing': ('enum', ['lower', 'upper', 'auto'], 'auto'),
+        'numeric_alignment': ('enum', ['left', 'right'], 'right'),
+        'key_bindings': ('enum', ['emacs', 'vi'], 'emacs'),
+        'log_level': ('enum', ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG', 'NONE'], 'INFO'),
+
+        # String options (no validation, just type check)
+        'syntax_style': ('str', None, 'default'),
+        'table_format': ('str', None, 'ascii'),
+        'redirect_format': ('str', None, 'csv'),
+        'null_string': ('str', None, '<null>'),
+        'pager': ('str', None, 'less'),
+        'prompt': ('str', None, r'\t \u@\h:\d> '),
+        'prompt_continuation': ('str', None, '->'),
+        'default_character_set': ('str', None, 'utf8mb4'),
+    }
+}
+
+
+class ConfigValidationWarning:
+    """Represents a configuration validation warning."""
+
+    def __init__(self, key: str, value: str, message: str, default: str):
+        self.key = key
+        self.value = value
+        self.message = message
+        self.default = default
+
+    def __str__(self) -> str:
+        return f"Config warning: {self.key}={self.value!r} - {self.message} (using default: {self.default})"
+
+
+def validate_config(config: ConfigObj) -> list[ConfigValidationWarning]:
+    """Validate configuration values and return list of warnings.
+
+    Invalid values are replaced with defaults. Warnings are returned
+    for the caller to display.
+    """
+    warnings: list[ConfigValidationWarning] = []
+
+    for section, schema in CONFIG_SCHEMA.items():
+        if section not in config:
+            continue
+
+        for key, (value_type, constraints, default) in schema.items():
+            if key not in config[section]:
+                continue
+
+            value = config[section][key]
+            warning = None
+
+            try:
+                if value_type == 'bool':
+                    # as_bool() handles validation, but we check for common mistakes
+                    if isinstance(value, str) and value.lower() not in (
+                        'true', 'false', 'yes', 'no', 'on', 'off', '1', '0', ''
+                    ):
+                        warning = f"Invalid boolean value"
+
+                elif value_type == 'float':
+                    try:
+                        float_val = float(value)
+                        if constraints:
+                            min_val, max_val = constraints
+                            if min_val is not None and float_val < min_val:
+                                warning = f"Value must be >= {min_val}"
+                            if max_val is not None and float_val > max_val:
+                                warning = f"Value must be <= {max_val}"
+                    except (ValueError, TypeError):
+                        warning = f"Invalid number format"
+
+                elif value_type == 'int':
+                    try:
+                        int_val = int(value)
+                        if constraints:
+                            min_val, max_val = constraints
+                            if min_val is not None and int_val < min_val:
+                                warning = f"Value must be >= {min_val}"
+                            if max_val is not None and int_val > max_val:
+                                warning = f"Value must be <= {max_val}"
+                    except (ValueError, TypeError):
+                        warning = f"Invalid integer format"
+
+                elif value_type == 'enum':
+                    if value not in constraints:
+                        warning = f"Must be one of: {', '.join(constraints)}"
+
+                elif value_type == 'str':
+                    # String type - no validation needed
+                    pass
+
+            except Exception as e:
+                warning = f"Validation error: {e}"
+
+            if warning:
+                warnings.append(ConfigValidationWarning(key, value, warning, default))
+                config[section][key] = default
+
+    return warnings
+
+
 def create_default_config(list_values: bool = True) -> ConfigObj:
     import mycli
 
@@ -167,6 +289,7 @@ def encrypt_mylogin_cnf(plaintext: IO[str]) -> BytesIO:
     https://github.com/isotopp/mysql-config-coder
 
     """
+    from Cryptodome.Cipher import AES  # Lazy import - only for .mylogin.cnf
 
     def realkey(key: bytes) -> bytes:
         """Create the AES key from the login key."""
@@ -222,6 +345,7 @@ def read_and_decrypt_mylogin_cnf(f: BinaryIO) -> BytesIO | None:
     :return: the decrypted login path file
     :rtype: io.BytesIO or None
     """
+    from Cryptodome.Cipher import AES  # Lazy import - only for .mylogin.cnf
 
     # Number of bytes used to store the length of ciphertext.
     MAX_CIPHER_STORE_LEN = 4

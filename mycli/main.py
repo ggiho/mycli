@@ -20,7 +20,7 @@ from mycli import __version__
 from mycli.clistyle import style_factory_output
 from mycli.compat import WIN
 from mycli.completion_refresher import CompletionRefresher
-from mycli.config import get_mylogin_cnf_path, open_mylogin_cnf, read_config_files, str_to_bool, write_default_config
+from mycli.config import get_mylogin_cnf_path, open_mylogin_cnf, read_config_files, str_to_bool, validate_config, write_default_config
 from mycli.packages import special
 from mycli.packages.filepaths import dir_path_exists
 from mycli.packages.parseutils import is_destructive, is_valid_connection_scheme
@@ -102,6 +102,12 @@ class MyCli(OutputMixin, ConnectionMixin, CLILoopMixin):
         # Load config.
         config_files: list[str | IO[str]] = self.system_config_files + [myclirc] + [self.pwd_config_file]
         c = self.config = read_config_files(config_files)
+
+        # Validate config and show warnings for invalid values
+        config_warnings = validate_config(c)
+        for warning in config_warnings:
+            self.echo(str(warning), err=True, fg="yellow")
+
         self.multi_line = c["main"].as_bool("multi_line")
         self.key_bindings = c["main"]["key_bindings"]
         special.set_timing_enabled(c["main"].as_bool("timing"))
@@ -164,6 +170,7 @@ class MyCli(OutputMixin, ConnectionMixin, CLILoopMixin):
 
         # Initialize completer.
         self.smart_completion = c["main"].as_bool("smart_completion")
+        self.include_system_schemas = c["main"].as_bool("include_system_schemas")
         self.completer = SQLCompleter(
             self.smart_completion, supported_formats=self.main_formatter.supported_formats, keyword_casing=keyword_casing
         )
@@ -600,8 +607,46 @@ def _merge_init_commands(mycli_config, dsn, init_command):
     return "; ".join(cmd.strip() for cmd in init_cmds if cmd)
 
 
+class BatchFormatManager:
+    """Manage batch mode formatter state and format resolution.
+
+    Handles the logic of selecting appropriate formatters (with/without headers)
+    for batch mode output, tracking query count for header inclusion.
+    """
+
+    FORMAT_MAP = {
+        'csv': ('csv', 'csv-noheader'),
+        'tsv': ('tsv', 'tsv_noheader'),
+        'table': ('ascii', 'ascii'),
+        'default': ('tsv', 'tsv'),
+    }
+
+    def __init__(self, formatter, batch_format: str = 'default'):
+        self.formatter = formatter
+        self.batch_format = batch_format
+        self.query_count = 0
+
+    def apply_format(self) -> None:
+        """Apply the appropriate format for the current query."""
+        is_first = self.query_count == 0
+        self.formatter.format_name = self._resolve_format_name(is_first)
+        self.query_count += 1
+
+    def apply_format_single(self) -> None:
+        """Apply format for a single query (always includes header)."""
+        self.formatter.format_name = self._resolve_format_name(is_first=True)
+
+    def _resolve_format_name(self, is_first: bool) -> str:
+        """Resolve the formatter name based on batch_format and query position."""
+        formats = self.FORMAT_MAP.get(self.batch_format, self.FORMAT_MAP['default'])
+        return formats[0] if is_first else formats[1]
+
+
 def _resolve_batch_format_name(batch_format, is_first):
-    """Resolve the formatter name for batch/execute mode."""
+    """Resolve the formatter name for batch/execute mode.
+
+    DEPRECATED: Use BatchFormatManager instead for new code.
+    """
     if batch_format == 'csv':
         return 'csv' if is_first else 'csv-noheader'
     elif batch_format == 'tsv':
@@ -615,11 +660,10 @@ def _resolve_batch_format_name(batch_format, is_first):
 def _run_stdin_pipe(mycli, batch_format, noninteractive, throttle, checkpoint):
     """Handle piped stdin input in batch mode."""
     stdin = click.get_text_stream("stdin")
-    counter = 0
+    format_manager = BatchFormatManager(mycli.main_formatter, batch_format)
+
     for stdin_text in stdin:
-        is_first = counter == 0
-        mycli.main_formatter.format_name = _resolve_batch_format_name(batch_format, is_first)
-        counter += 1
+        format_manager.apply_format()
         warn_confirmed: bool | None = True
         if not noninteractive and mycli.destructive_warning and is_destructive(mycli.destructive_keywords, stdin_text):
             try:
@@ -632,7 +676,7 @@ def _run_stdin_pipe(mycli, batch_format, noninteractive, throttle, checkpoint):
                 sys.exit(1)
         try:
             if warn_confirmed:
-                if throttle and counter > 1:
+                if throttle and format_manager.query_count > 1:
                     sleep(throttle)
                 mycli.run_query(stdin_text, checkpoint=checkpoint, new_line=True)
         except Exception as e:
@@ -933,7 +977,8 @@ def cli(
     #  --execute argument
     if execute:
         try:
-            mycli.main_formatter.format_name = _resolve_batch_format_name(batch_format, is_first=True)
+            format_manager = BatchFormatManager(mycli.main_formatter, batch_format)
+            format_manager.apply_format_single()
             if execute.endswith(r'\G') and batch_format in ('csv', 'tsv', 'table'):
                 execute = execute[:-2]
 

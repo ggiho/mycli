@@ -12,7 +12,6 @@ from typing import Any, Generator
 import click
 from configobj import ConfigObj
 from pymysql.cursors import Cursor
-import pyperclip
 import sqlparse
 
 from mycli.compat import WIN
@@ -237,6 +236,7 @@ def get_clip_query(sql: str) -> str:
 
 def copy_query_to_clipboard(sql: str | None = None) -> str | None:
     """Send query to the clipboard."""
+    import pyperclip  # Lazy import - only loaded when \clip is used
 
     sql = sql or ""
     message = None

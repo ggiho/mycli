@@ -8,7 +8,6 @@ from collections import defaultdict
 from typing import Any
 
 import click
-import keyring
 import pymysql
 from configobj import ConfigObj
 from pymysql.constants.ER import HANDSHAKE_ERROR
@@ -167,6 +166,7 @@ class ConnectionMixin:
         keychain_retrieved = False
 
         if passwd is None and use_keyring and not reset_keyring:
+            import keyring  # Lazy import - only loaded when keyring is enabled
             passwd = keyring.get_password(keychain_domain, keychain_user)
             keychain_retrieved = True
 
@@ -175,6 +175,7 @@ class ConnectionMixin:
             passwd = click.prompt(f"Enter password for {user}", hide_input=True, show_default=False, default='', type=str, err=True)
 
         if reset_keyring or (use_keyring and not keychain_retrieved):
+            import keyring  # Lazy import - only loaded when keyring is enabled
             try:
                 keyring.set_password(keychain_domain, keychain_user, passwd)
                 click.secho('Password saved to the system keychain', err=True)
@@ -201,6 +202,7 @@ class ConnectionMixin:
                     ssh_key_filename,
                     init_command,
                     unbuffered,
+                    include_system_schemas=getattr(self, 'include_system_schemas', False),
                 )
             except pymysql.OperationalError as e1:
                 if e1.args[0] == HANDSHAKE_ERROR and ssl is not None and ssl.get("mode", None) == "auto":
@@ -222,6 +224,7 @@ class ConnectionMixin:
                             ssh_key_filename,
                             init_command,
                             unbuffered,
+                            include_system_schemas=getattr(self, 'include_system_schemas', False),
                         )
                     except Exception as e2:
                         raise e2

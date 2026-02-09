@@ -115,11 +115,26 @@ class SQLExecute:
         WHERE v.TABLE_SCHEMA = %s
         ORDER BY v.TABLE_NAME, c.ORDINAL_POSITION"""
 
-    all_columns_query = """SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
+    # System schemas to exclude from autocompletion by default
+    SYSTEM_SCHEMAS = ('information_schema', 'performance_schema', 'mysql', 'sys')
+
+    _all_columns_query_exclude_system = """SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
         FROM information_schema.columns
         WHERE TABLE_SCHEMA NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys')
         AND TABLE_SCHEMA != %s
         ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"""
+
+    _all_columns_query_include_system = """SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
+        FROM information_schema.columns
+        WHERE TABLE_SCHEMA != %s
+        ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"""
+
+    @property
+    def all_columns_query(self) -> str:
+        """Return the query based on include_system_schemas setting."""
+        if getattr(self, 'include_system_schemas', False):
+            return self._all_columns_query_include_system
+        return self._all_columns_query_exclude_system
 
     enum_values_query = """SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM information_schema.columns
         WHERE table_schema = %s AND data_type = 'enum'
@@ -181,6 +196,7 @@ class SQLExecute:
         ssh_key_filename: str | None,
         init_command: str | None = None,
         unbuffered: bool | None = None,
+        include_system_schemas: bool = False,
     ) -> None:
         self.dbname = database
         self.user = user
@@ -200,6 +216,7 @@ class SQLExecute:
         self.ssh_key_filename = ssh_key_filename
         self.init_command = init_command
         self.unbuffered = unbuffered
+        self.include_system_schemas = include_system_schemas
         self.conn: Connection | None = None
         self.connect()
 
@@ -650,6 +667,7 @@ class SQLExecute:
         clone.ssh_key_filename = self.ssh_key_filename
         clone.init_command = self.init_command
         clone.unbuffered = self.unbuffered
+        clone.include_system_schemas = self.include_system_schemas
         clone.server_info = self.server_info
         clone.connection_id = None
 
