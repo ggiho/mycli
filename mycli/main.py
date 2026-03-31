@@ -37,9 +37,10 @@ from mycli.output_mixin import OutputMixin
 from mycli.connection_mixin import ConnectionMixin
 from mycli.cliloop_mixin import CLILoopMixin
 
-# Re-export from constants and query_utils for backwards compatibility
+# Re-export from constants, query_utils, and cliloop_mixin for backwards compatibility
 from mycli.constants import Query, SUPPORT_INFO, DEFAULT_WIDTH, DEFAULT_HEIGHT
 from mycli.query_utils import need_completion_refresh, need_completion_reset, is_mutating, is_select
+from mycli.cliloop_mixin import thanks_picker
 
 try:
     import paramiko
@@ -134,6 +135,7 @@ class MyCli(OutputMixin, ConnectionMixin, CLILoopMixin):
         self.post_redirect_command = c['main'].get('post_redirect_command')
         self.null_string = c['main'].get('null_string')
         self.numeric_alignment = c['main'].get('numeric_alignment', 'right')
+        self.max_column_width = int(c['main'].get('max_column_width', 0))
 
         # set ssl_mode if a valid option is provided in a config file, otherwise None
         ssl_mode = c["main"].get("ssl_mode", None)
@@ -993,67 +995,6 @@ def cli(
     else:
         _run_stdin_pipe(mycli, batch_format, noninteractive, throttle, checkpoint)
     mycli.close()
-
-
-def need_completion_refresh(queries: str) -> bool:
-    """Determines if the completion needs a refresh by checking if the sql
-    statement is an alter, create, drop or change db."""
-    for query in sqlparse.split(queries):
-        try:
-            first_token = query.split()[0]
-            if first_token.lower() in ("alter", "create", "use", "\\r", "\\u", "connect", "drop", "rename"):
-                return True
-        except Exception:
-            return False
-    return False
-
-
-def need_completion_reset(queries: str) -> bool:
-    """Determines if the statement is a database switch such as 'use' or '\\u'.
-    When a database is changed the existing completions must be reset before we
-    start the completion refresh for the new database.
-    """
-    for query in sqlparse.split(queries):
-        try:
-            first_token = query.split()[0]
-            if first_token.lower() in ("use", "\\u"):
-                return True
-        except Exception:
-            return False
-    return False
-
-
-def is_mutating(status: str | None) -> bool:
-    """Determines if the statement is mutating based on the status."""
-    if not status:
-        return False
-
-    mutating = {"insert", "update", "delete", "alter", "create", "drop", "replace", "truncate", "load", "rename"}
-    return status.split(None, 1)[0].lower() in mutating
-
-
-def is_select(status: str | None) -> bool:
-    """Returns true if the first word in status is 'select'."""
-    if not status:
-        return False
-    return status.split(None, 1)[0].lower() == "select"
-
-
-def thanks_picker() -> str:
-    import mycli
-
-    lines: str = ""
-    with resources.files(mycli).joinpath("AUTHORS").open('r') as f:
-        lines += f.read()
-
-    with resources.files(mycli).joinpath("SPONSORS").open('r') as f:
-        lines += f.read()
-
-    contents = []
-    for line in lines.split("\n"):
-        if m := re.match(r"^ *\* (.*)", line):
-            contents.append(m.group(1))
-    return choice(contents) if contents else 'our sponsors'
 
 
 @prompt_register("edit-and-execute-command")

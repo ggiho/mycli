@@ -320,5 +320,41 @@ def test_set_delimiter():
         assert mycli.packages.special.get_current_delimiter() == delim
 
 
+def test_execute_system_command_basic():
+    """Test that system command executes a simple command."""
+    from mycli.packages.special.iocommands import execute_system_command
+
+    results = execute_system_command("echo hello")
+    assert len(results) == 1
+    assert "hello" in results[0].status
+
+
+def test_execute_system_command_quoted_args():
+    """Test that system command handles quoted arguments correctly."""
+    from mycli.packages.special.iocommands import execute_system_command
+
+    results = execute_system_command('echo "hello world"')
+    assert len(results) == 1
+    assert "hello world" in results[0].status
+
+
+def test_execute_system_command_single_quoted_args():
+    """Test that system command handles single-quoted arguments."""
+    from mycli.packages.special.iocommands import execute_system_command
+
+    results = execute_system_command("echo 'foo bar'")
+    assert len(results) == 1
+    assert "foo bar" in results[0].status
+
+
+def test_execute_system_command_empty():
+    """Test that system command with no args returns usage."""
+    from mycli.packages.special.iocommands import execute_system_command
+
+    results = execute_system_command("")
+    assert len(results) == 1
+    assert "Syntax" in results[0].status
+
+
 def teardown_function():
     mycli.packages.special.set_delimiter(";")

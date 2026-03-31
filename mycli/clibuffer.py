@@ -50,7 +50,7 @@ def _multiline_exception(text: str) -> bool:
         # Quit doesn't need semi-column
         (text == "quit")
         or
-        # To all teh vim fans out there
+        # To all the vim fans out there
         (text == ":q")
         or
         # just a plain enter without any text
