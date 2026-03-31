@@ -117,6 +117,7 @@ CONFIG_SCHEMA = {
 
         # Numeric options
         'beep_after_seconds': ('float', (0, None), '0'),
+        'max_column_width': ('int', (0, None), '0'),
 
         # Enum options
         'ssl_mode': ('enum', ['auto', 'on', 'off'], 'auto'),

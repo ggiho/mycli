@@ -71,6 +71,10 @@ redirect_format = csv
 # empty string, and JSON formats use native nulls.
 null_string = <nope>
 
+# Maximum column width in characters. Longer values are truncated with '...'.
+# Set to 0 to disable truncation (default).
+max_column_width = 0
+
 # How to align numeric data in tabular output: right or left.
 numeric_alignment = right
 

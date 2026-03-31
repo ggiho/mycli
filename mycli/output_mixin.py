@@ -27,6 +27,26 @@ if TYPE_CHECKING:
     from mycli.sqlcompleter import SQLCompleter
 
 
+def _truncate_columns(data, headers, max_width=0, **_):
+    """Preprocessor that truncates column values exceeding max_width.
+
+    Follows cli_helpers preprocessor convention: (data, headers, **_) -> (data, headers).
+    """
+    if not max_width or max_width <= 0:
+        return data, headers
+
+    suffix = "..."
+    cutoff = max(max_width - len(suffix), 1)
+
+    def truncate_row(row):
+        return tuple(
+            (str(val)[:cutoff] + suffix if isinstance(val, str) and len(val) > max_width else val)
+            for val in row
+        )
+
+    return (truncate_row(row) for row in data), headers
+
+
 class OutputMixin:
     """Mixin providing output formatting and display methods for MyCli."""
 
@@ -142,12 +162,12 @@ class OutputMixin:
         if cnf["skip-pager"] or not self.config["main"].as_bool("enable_pager"):
             special.disable_pager()
 
-    def refresh_completions(self, reset: bool = False) -> list[SQLResult]:
+    def refresh_completions(self, reset: bool = False, only: set[str] | None = None) -> list[SQLResult]:
         if reset:
             with self._completer_lock:
                 self.completer.reset_completions()
         assert self.sqlexecute is not None
-        self.completion_refresher.refresh(
+        return self.completion_refresher.refresh(
             self.sqlexecute,
             self._on_completions_refreshed,
             {
@@ -155,9 +175,8 @@ class OutputMixin:
                 "supported_formats": self.main_formatter.supported_formats,
                 "keyword_casing": self.completer.keyword_casing,
             },
+            only=only,
         )
-
-        return [SQLResult(status="Auto-completion refresh started in the background.")]
 
     def _on_completions_refreshed(self, new_completer: 'SQLCompleter') -> None:
         """Swap the completer object in cli with the newly created completer."""
@@ -282,9 +301,17 @@ class OutputMixin:
         if null_string is not None and default_kwargs.get('missing_value') == DEFAULT_MISSING_VALUE:
             output_kwargs['missing_value'] = null_string
 
+        pre = []
         if use_formatter.format_name not in sql_format.supported_formats:
-            # will run before preprocessors defined as part of the format in cli_helpers
-            output_kwargs["preprocessors"] = (preprocessors.convert_to_undecoded_string,)
+            pre.append(preprocessors.convert_to_undecoded_string)
+
+        max_col_width = getattr(self, 'max_column_width', 0)
+        if max_col_width and max_col_width > 0:
+            from functools import partial
+            pre.append(partial(_truncate_columns, max_width=max_col_width))
+
+        if pre:
+            output_kwargs["preprocessors"] = tuple(pre)
 
         if title:  # Only print the title if it's not None.
             output = itertools.chain(output, [title])
