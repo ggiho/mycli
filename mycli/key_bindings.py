@@ -1,4 +1,5 @@
 import logging
+import threading
 
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import completion_is_selected, control_is_searchable, emacs_mode
@@ -9,6 +10,48 @@ from mycli.packages import shortcuts
 from mycli.packages.toolkit.fzf import search_history
 
 _logger = logging.getLogger(__name__)
+
+
+def _run_explain(mycli, sql: str, app) -> None:
+    """Execute EXPLAIN in background and display results."""
+    import click
+
+    sql = sql.strip().rstrip(';')
+    if not sql:
+        return
+    lowered = sql.lower().lstrip()
+    if lowered.startswith(('explain', 'desc ', 'describe ', 'show ', 'set ', '\\', 'use ')):
+        return
+    try:
+        explain_sql = f"EXPLAIN {sql}"
+        results = list(mycli.sqlexecute.run(explain_sql))
+        lines = []
+        for result in results:
+            if result.headers and result.results:
+                import pymysql.cursors
+                rows = list(result.results) if hasattr(result.results, '__iter__') else []
+                widths = [len(h) for h in result.headers]
+                for row in rows:
+                    for i, val in enumerate(row):
+                        widths[i] = max(widths[i], len(str(val) if val is not None else 'NULL'))
+                header_line = ' | '.join(h.ljust(widths[i]) for i, h in enumerate(result.headers))
+                sep_line = '-+-'.join('-' * w for w in widths)
+                lines.append(header_line)
+                lines.append(sep_line)
+                for row in rows:
+                    line = ' | '.join(
+                        (str(v) if v is not None else 'NULL').ljust(widths[i])
+                        for i, v in enumerate(row)
+                    )
+                    lines.append(line)
+        if lines:
+            click.echo('\n--- EXPLAIN Preview (F5) ---')
+            for line in lines:
+                click.echo(line)
+            click.echo('---')
+        app.invalidate()
+    except Exception as e:
+        _logger.debug("EXPLAIN preview failed: %r", e)
 
 
 def mycli_bindings(mycli) -> KeyBindings:
@@ -180,5 +223,18 @@ def mycli_bindings(mycli) -> KeyBindings:
             event.app.current_buffer.validate_and_handle()
         else:
             event.app.current_buffer.insert_text("\n")
+
+    @kb.add("f5")
+    def _(event: KeyPressEvent) -> None:
+        """Run EXPLAIN on the current query and display the result."""
+        _logger.debug("Detected F5 key.")
+        sql = event.app.current_buffer.text
+        if sql.strip():
+            t = threading.Thread(
+                target=_run_explain,
+                args=(mycli, sql, event.app),
+                daemon=True,
+            )
+            t.start()
 
     return kb

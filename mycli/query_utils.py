@@ -37,6 +37,43 @@ def need_completion_reset(queries: str) -> bool:
     return False
 
 
+_DDL_REFRESHER_MAP: dict[str, set[str]] = {
+    "create": {"schemata", "tables", "views", "functions", "procedures", "enum_values"},
+    "alter": {"tables", "views", "enum_values"},
+    "drop": {"schemata", "tables", "views", "functions", "procedures"},
+    "rename": {"tables", "views"},
+}
+
+
+def completion_refresh_scope(queries: str) -> set[str] | None:
+    """Return the set of refresher names needed for the DDL, or None for full refresh.
+
+    For USE/database switch returns None (full refresh needed).
+    For CREATE/ALTER/DROP/RENAME returns only the relevant subset.
+    """
+    for query in sqlparse.split(queries):
+        try:
+            tokens = query.split()
+            first = tokens[0].lower()
+        except (IndexError, Exception):
+            continue
+        if first in ("use", "\\u", "\\r", "connect"):
+            return None
+        scope = _DDL_REFRESHER_MAP.get(first)
+        if scope:
+            second = tokens[1].lower() if len(tokens) > 1 else ""
+            if second == "table":
+                return {"schemata", "tables", "enum_values"}
+            elif second == "view":
+                return {"schemata", "views"}
+            elif second in ("function", "procedure"):
+                return {"functions", "procedures"}
+            elif second == "database":
+                return {"databases", "schemata"}
+            return scope
+    return None
+
+
 def is_mutating(status: str | None) -> bool:
     """Determines if the statement is mutating based on the status."""
     if not status:

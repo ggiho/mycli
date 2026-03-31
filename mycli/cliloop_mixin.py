@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Generator
 
 import click
 import pymysql
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory  # noqa: F401 (kept for backwards compat)
 from prompt_toolkit.completion import DynamicCompleter
 from prompt_toolkit.enums import DEFAULT_BUFFER, EditingMode
 from prompt_toolkit.filters import HasFocus, IsDone
@@ -32,8 +32,8 @@ from mycli.packages.hybrid_redirection import get_redirect_components, is_redire
 from mycli.packages.parseutils import is_dropping_database
 from mycli.packages.prompt_utils import confirm, confirm_destructive_query
 from mycli.packages.sqlresult import SQLResult
-from mycli.packages.toolkit.history import FileHistoryWithTimestamp
-from mycli.query_utils import is_mutating, is_select, need_completion_refresh, need_completion_reset
+from mycli.packages.toolkit.history import FileHistoryWithTimestamp, FrequencyWeightedAutoSuggest
+from mycli.query_utils import completion_refresh_scope, is_mutating, is_select, need_completion_refresh, need_completion_reset
 
 if TYPE_CHECKING:
     from mycli.sqlexecute import SQLExecute
@@ -240,6 +240,15 @@ class CLILoopMixin:
                         max_width = DEFAULT_WIDTH
                 else:
                     max_width = None
+
+                # Capture result for \last / \copy (only for manageable result sets)
+                if is_select(status) and headers and isinstance(cur, Cursor):
+                    try:
+                        rows = list(cur)
+                        special.store_last_result(headers, rows)
+                        cur = iter(rows)
+                    except Exception:
+                        pass
 
                 formatted = self.format_output(
                     title,
@@ -474,7 +483,8 @@ class CLILoopMixin:
 
                 # Refresh the table names and column names if necessary.
                 if need_completion_refresh(text):
-                    self.refresh_completions(reset=need_completion_reset(text))
+                    scope = completion_refresh_scope(text)
+                    self.refresh_completions(reset=need_completion_reset(text), only=scope)
             finally:
                 if self.logfile is False:
                     self.echo("Warning: This query was not logged.", err=True, fg="red")
@@ -508,7 +518,7 @@ class CLILoopMixin:
                 tempfile_suffix=".sql",
                 completer=DynamicCompleter(lambda: self.completer),
                 history=history,
-                auto_suggest=AutoSuggestFromHistory(),
+                auto_suggest=FrequencyWeightedAutoSuggest(),
                 complete_while_typing=True,
                 multiline=cli_is_multiline(self),
                 style=style_factory(self.syntax_style, self.cli_style),

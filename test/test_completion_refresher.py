@@ -28,6 +28,9 @@ def test_ctor(refresher):
         "tables",
         "enum_values",
         "users",
+        "views",
+        "other_databases",
+        "foreign_keys",
         "functions",
         "procedures",
         "special_commands",
@@ -52,8 +55,8 @@ def test_refresh_called_once(refresher):
         assert actual[0].title is None
         assert actual[0].results is None
         assert actual[0].headers is None
-        assert actual[0].status == "Auto-completion refresh started in the background."
-        bg_refresh.assert_called_with(sqlexecute, callbacks, {})
+        assert actual[0].status == "Auto-completion refresh started in the background (all)."
+        bg_refresh.assert_called_with(sqlexecute, callbacks, {}, None)
 
 
 def test_refresh_called_twice(refresher):
@@ -77,7 +80,7 @@ def test_refresh_called_twice(refresher):
     assert actual1[0].title is None
     assert actual1[0].results is None
     assert actual1[0].headers is None
-    assert actual1[0].status == "Auto-completion refresh started in the background."
+    assert actual1[0].status == "Auto-completion refresh started in the background (all)."
 
     actual2 = refresher.refresh(sqlexecute, callbacks)
     time.sleep(1)  # Wait for the thread to work.

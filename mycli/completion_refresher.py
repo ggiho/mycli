@@ -22,6 +22,7 @@ class CompletionRefresher:
         executor: SQLExecute,
         callbacks: Callable | list[Callable],
         completer_options: dict | None = None,
+        only: set[str] | None = None,
     ) -> list[SQLResult]:
         """Creates a SQLCompleter object and populates it with the relevant
         completion suggestions in a background thread.
@@ -32,6 +33,8 @@ class CompletionRefresher:
                     has completed the refresh. The newly created completion
                     object will be passed in as an argument to each callback.
         completer_options - dict of options to pass to SQLCompleter.
+        only - If provided, only run the named refreshers (e.g. {'tables', 'schemata'}).
+               When None, all refreshers are run.
 
         """
         if completer_options is None:
@@ -42,11 +45,14 @@ class CompletionRefresher:
             return [SQLResult(status="Auto-completion refresh restarted.")]
         else:
             self._completer_thread = threading.Thread(
-                target=self._bg_refresh, args=(executor, callbacks, completer_options), name="completion_refresh"
+                target=self._bg_refresh,
+                args=(executor, callbacks, completer_options, only),
+                name="completion_refresh",
             )
             self._completer_thread.daemon = True
             self._completer_thread.start()
-            return [SQLResult(status="Auto-completion refresh started in the background.")]
+            label = ', '.join(sorted(only)) if only else 'all'
+            return [SQLResult(status=f"Auto-completion refresh started in the background ({label}).")]
 
     def is_refreshing(self) -> bool:
         return bool(self._completer_thread and self._completer_thread.is_alive())
@@ -56,6 +62,7 @@ class CompletionRefresher:
         sqlexecute: SQLExecute,
         callbacks: Callable | list[Callable],
         completer_options: dict,
+        only: set[str] | None = None,
     ) -> None:
         completer = SQLCompleter(**completer_options)
 
@@ -67,20 +74,19 @@ class CompletionRefresher:
         if callable(callbacks):
             callbacks = [callbacks]
 
+        items = self.refreshers.items()
+        if only:
+            items = [(n, r) for n, r in items if n in only]
+
         while 1:
-            for name, refresher in self.refreshers.items():
+            for name, refresher in items:
                 self.current_refresher = name
                 refresher(completer, executor)
                 if self._restart_refresh.is_set():
                     self._restart_refresh.clear()
                     break
             else:
-                # Break out of while loop if the for loop finishes natually
-                # without hitting the break statement.
                 break
-
-            # Start over the refresh from the beginning if the for loop hit the
-            # break statement.
             continue
 
         self.current_refresher = None
@@ -146,27 +152,29 @@ def refresh_views(completer: SQLCompleter, executor: SQLExecute) -> None:
 
 @refresher("other_databases")
 def refresh_other_databases(completer: SQLCompleter, executor: SQLExecute) -> None:
-    """Refresh table and column metadata for all databases (cross-schema completion).
+    """Prepare lazy cross-schema completion.
 
-    Uses a single query to fetch schema, table, and column data together,
-    avoiding the overhead of separate table-list and column-list queries.
+    Instead of fetching all columns from all databases upfront (which is very
+    slow for servers with many schemas), we mark the completer for lazy loading.
+    The actual table/column metadata for a given schema is fetched on-demand
+    by SQLCompleter when the user types 'schema_name.' and the schema isn't loaded.
+
+    Note: We pass the executor here, but the completer will create its own
+    connection for lazy queries if needed.
     """
-    try:
-        all_columns_data = list(executor.all_table_columns())
-        # Extract unique (schema, table) pairs for relation metadata
-        seen_tables: set[tuple[str, str]] = set()
-        tables_data: list[tuple[str, str]] = []
-        for schema, table, _column in all_columns_data:
-            key = (schema, table)
-            if key not in seen_tables:
-                seen_tables.add(key)
-                tables_data.append((schema, table))
-        completer.extend_relations_with_schema(tables_data, kind="tables")
-        completer.extend_columns_with_schema(all_columns_data, kind="tables")
-    except Exception as e:
-        # May fail due to insufficient privileges on some databases
-        logger.debug("Failed to refresh tables/columns: %r", e)
-        pass
+    completer.enable_lazy_schema_loading(
+        host=executor.host,
+        port=executor.port,
+        user=executor.user,
+        password=executor.password,
+        charset=executor.charset,
+        ssl=executor.ssl,
+    )
+
+
+@refresher("foreign_keys")
+def refresh_foreign_keys(completer: SQLCompleter, executor: SQLExecute) -> None:
+    completer.extend_foreign_keys(executor.foreign_keys())
 
 
 @refresher("functions")

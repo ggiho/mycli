@@ -52,9 +52,20 @@ class IOState:
         self.delimiter_command = DelimiterCommand()
         self.favorite_queries = FavoriteQueries(ConfigObj())
         self.destructive_keywords: list[str] = []
+        self.last_result_headers: list[str] | None = None
+        self.last_result_rows: list[tuple] | None = None
 
 
 _state = IOState()
+
+
+def store_last_result(headers: list[str] | None, rows: list[tuple] | None) -> None:
+    _state.last_result_headers = headers
+    _state.last_result_rows = rows
+
+
+def get_last_result() -> tuple[list[str] | None, list[tuple] | None]:
+    return _state.last_result_headers, _state.last_result_rows
 
 
 def set_favorite_queries(config):
@@ -380,7 +391,7 @@ def execute_system_command(arg: str, **_) -> list[SQLResult]:
                 return [SQLResult(status=error_message)]
             return [SQLResult(status="")]
 
-        args = arg.split(" ")
+        args = shlex.split(arg)
         process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         output, error = process.communicate()
         response = output if not error else error
@@ -623,3 +634,45 @@ def get_current_delimiter() -> str:
 def split_queries(input_str: str) -> Generator[str, None, None]:
     for query in _state.delimiter_command.queries_iter(input_str):
         yield query
+
+
+@special_command("\\last", "\\last", "Show the last query result again.", arg_type=ArgType.NO_QUERY, case_sensitive=True)
+def show_last_result(**_) -> list[SQLResult]:
+    headers, rows = get_last_result()
+    if headers is None or rows is None:
+        return [SQLResult(status="No previous result.")]
+    return [SQLResult(results=iter(rows), headers=headers, status=f"{len(rows)} row(s) from last result")]
+
+
+@special_command("\\copy", "\\copy", "Copy last result to system clipboard.", arg_type=ArgType.NO_QUERY, case_sensitive=True)
+def copy_last_result(**_) -> list[SQLResult]:
+    headers, rows = get_last_result()
+    if headers is None or rows is None:
+        return [SQLResult(status="No previous result to copy.")]
+
+    lines = ["\t".join(headers)]
+    for row in rows:
+        lines.append("\t".join(str(v) if v is not None else "NULL" for v in row))
+    text = "\n".join(lines)
+
+    import platform
+    import shutil
+
+    system = platform.system()
+    if system == "Darwin" and shutil.which("pbcopy"):
+        cmd = ["pbcopy"]
+    elif system == "Linux" and shutil.which("xclip"):
+        cmd = ["xclip", "-selection", "clipboard"]
+    elif system == "Linux" and shutil.which("xsel"):
+        cmd = ["xsel", "--clipboard", "--input"]
+    elif shutil.which("clip"):
+        cmd = ["clip"]
+    else:
+        return [SQLResult(status="No clipboard command found (pbcopy/xclip/xsel/clip).")]
+
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        proc.communicate(input=text.encode("utf-8"))
+        return [SQLResult(status=f"Copied {len(rows)} row(s) to clipboard.")]
+    except Exception as e:
+        return [SQLResult(status=f"Failed to copy: {e}")]
