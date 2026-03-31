@@ -14,13 +14,22 @@ _ENUM_VALUE_RE = re.compile(
     r"(?P<lhs>(?:`[^`]+`|[\w$]+)(?:\.(?:`[^`]+`|[\w$]+))?)\s*=\s*$",
     re.IGNORECASE,
 )
-# Pre-compiled patterns for extract_cte_names (called during query parsing)
-_CTE_PATTERN_RE = re.compile(r'\bWITH\b\s+(.*?)\bSELECT\b', re.IGNORECASE | re.DOTALL)
-_CTE_NAME_PATTERN_RE = re.compile(r'(\w+)\s+AS\s*\(', re.IGNORECASE)
 # Pre-compiled pattern for JSON function detection
 _FUNC_NAME_RE = re.compile(r'(\w+)\s*$')
 # Pre-compiled pattern for CREATE TABLE LIKE detection
 _CREATE_TABLE_LIKE_RE = re.compile(r'^\s*create\s+table\s', re.IGNORECASE)
+# Pre-compiled pattern for INSERT INTO ... VALUES ( detection
+_INSERT_VALUES_RE = re.compile(
+    r'insert\s+(?:ignore\s+)?into\s+(?:`[^`]+`|[\w$.]+)\s*'
+    r'(?:\([^)]*\)\s*)?'
+    r'values\s*\(',
+    re.IGNORECASE,
+)
+# Extracts the table name from INSERT INTO <table>
+_INSERT_TABLE_RE = re.compile(
+    r'insert\s+(?:ignore\s+)?into\s+(?:`([^`]+)`|([\w$.]+))',
+    re.IGNORECASE,
+)
 
 WINDOW_FUNCTION_KEYWORDS = [
     'PARTITION BY', 'ORDER BY', 'ROWS', 'RANGE', 'GROUPS',
@@ -34,6 +43,41 @@ JSON_FUNCTIONS = (
     'json_unquote', 'json_keys', 'json_search', 'json_contains',
     'json_array_append', 'json_array_insert',
 )
+
+
+_PRECEDING_TABLE_RE = re.compile(
+    r'(?:from|join|into|update)\s+(?:`([^`]+)`|([\w$.]+))\s+as\s*$',
+    re.IGNORECASE,
+)
+
+
+def _extract_preceding_table(text_before_cursor: str) -> str | None:
+    """Extract the table name that immediately precedes 'AS' in the query."""
+    m = _PRECEDING_TABLE_RE.search(text_before_cursor.rstrip())
+    if m:
+        return m.group(1) or m.group(2)
+    return None
+
+
+def _insert_values_hint(text_before_cursor: str) -> dict[str, Any] | None:
+    """Detect INSERT INTO <table> VALUES (...) context and return a hint."""
+    if not _INSERT_VALUES_RE.search(text_before_cursor):
+        return None
+    m = _INSERT_TABLE_RE.search(text_before_cursor)
+    if not m:
+        return None
+    table_name = m.group(1) or m.group(2)
+    # Count commas inside the open VALUES(...) to determine column position
+    last_open = text_before_cursor.rfind('(')
+    if last_open < 0:
+        return None
+    inside_parens = text_before_cursor[last_open + 1:]
+    position = inside_parens.count(',')
+    return {
+        "type": "insert_values",
+        "table": table_name,
+        "position": position,
+    }
 
 
 def _enum_value_suggestion(text_before_cursor: str, full_text: str) -> dict[str, Any] | None:
@@ -155,20 +199,137 @@ def extract_cte_names(full_text: str) -> list[str]:
 
     Handles: WITH cte1 AS (...), cte2 AS (...) SELECT ...
     """
-    cte_names = []
-    # Match WITH ... AS pattern, handling nested parens
-    match = _CTE_PATTERN_RE.search(full_text)
-    if not match:
-        return cte_names
+    text = full_text.lstrip()
+    if not text[:4].lower() == "with":
+        return []
 
-    cte_block = match.group(1)
-    # Extract individual CTE names: name AS (...)
-    for m in _CTE_NAME_PATTERN_RE.finditer(cte_block):
-        name = m.group(1)
-        if name.upper() != 'RECURSIVE':
-            cte_names.append(name)
+    pos = 4
+    length = len(text)
+    cte_names: list[str] = []
+
+    def skip_whitespace(idx: int) -> int:
+        while idx < length and text[idx].isspace():
+            idx += 1
+        return idx
+
+    def read_identifier(idx: int) -> tuple[str, int]:
+        if idx >= length:
+            return "", idx
+
+        if text[idx] == "`":
+            end = text.find("`", idx + 1)
+            if end == -1:
+                return text[idx + 1 :], length
+            return text[idx + 1 : end], end + 1
+
+        start = idx
+        while idx < length and (text[idx].isalnum() or text[idx] in ("_", "$")):
+            idx += 1
+        return text[start:idx], idx
+
+    def consume_balanced_parens(idx: int) -> int:
+        depth = 0
+        in_single = False
+        in_double = False
+        in_backtick = False
+        escaped = False
+
+        while idx < length:
+            ch = text[idx]
+
+            if escaped:
+                escaped = False
+            elif ch == "\\" and (in_single or in_double):
+                escaped = True
+            elif ch == "`" and not in_single and not in_double:
+                in_backtick = not in_backtick
+            elif ch == "'" and not in_double and not in_backtick:
+                in_single = not in_single
+            elif ch == '"' and not in_single and not in_backtick:
+                in_double = not in_double
+            elif not (in_single or in_double or in_backtick):
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return idx + 1
+
+            idx += 1
+
+        return idx
+
+    pos = skip_whitespace(pos)
+    if text[pos : pos + 9].lower() == "recursive":
+        pos = skip_whitespace(pos + 9)
+
+    while pos < length:
+        name, pos = read_identifier(pos)
+        if not name:
+            break
+        cte_names.append(name)
+
+        pos = skip_whitespace(pos)
+        if text[pos : pos + 2].lower() != "as":
+            break
+
+        pos = skip_whitespace(pos + 2)
+        if pos >= length or text[pos] != "(":
+            break
+
+        pos = consume_balanced_parens(pos)
+        pos = skip_whitespace(pos)
+
+        if pos < length and text[pos] == ",":
+            pos = skip_whitespace(pos + 1)
+            continue
+
+        break
 
     return cte_names
+
+
+def extract_cte_columns(full_text: str) -> dict[str, list[str]]:
+    """Extract CTE names and their column lists from WITH clauses.
+
+    Returns {cte_name: [col1, col2, ...]} for each CTE whose columns can be
+    determined from the SELECT list in the CTE body.
+    """
+    text = full_text.lstrip()
+    if not text[:4].lower() == "with":
+        return {}
+    try:
+        import sqlglot
+        parsed = sqlglot.parse(
+            full_text,
+            dialect="mysql",
+            error_level=sqlglot.ErrorLevel.IGNORE,
+        )
+        if not parsed:
+            return {}
+        stmt = parsed[0]
+        result: dict[str, list[str]] = {}
+        for cte in stmt.find_all(sqlglot.exp.CTE):
+            alias_node = cte.args.get("alias")
+            if not alias_node:
+                continue
+            cte_name = alias_node.name
+            body = cte.this
+            if not isinstance(body, sqlglot.exp.Select):
+                continue
+            cols = []
+            for expr in body.expressions:
+                if isinstance(expr, sqlglot.exp.Alias):
+                    cols.append(expr.alias)
+                elif isinstance(expr, sqlglot.exp.Column):
+                    cols.append(expr.name)
+                elif isinstance(expr, sqlglot.exp.Star):
+                    cols.append("*")
+            if cols:
+                result[cte_name] = cols
+        return result
+    except Exception:
+        return {}
 
 
 def suggest_type(full_text: str, text_before_cursor: str) -> list[dict[str, Any]]:
@@ -178,6 +339,16 @@ def suggest_type(full_text: str, text_before_cursor: str) -> list[dict[str, Any]
     Returns a tuple with a type of entity ('table', 'column' etc) and a scope.
     A scope for a column category will be a list of tables.
     """
+
+    stripped_before_cursor = text_before_cursor.rstrip()
+    if stripped_before_cursor.endswith(('->', '->>')):
+        return [{"type": "json_path"}]
+    if stripped_before_cursor.lower().endswith("over("):
+        return [{"type": "keyword_list", "keywords": WINDOW_FUNCTION_KEYWORDS}]
+
+    insert_hint = _insert_values_hint(text_before_cursor)
+    if insert_hint:
+        return [insert_hint]
 
     word_before_cursor = last_word(text_before_cursor, include="many_punctuations")
 
@@ -388,7 +559,9 @@ def suggest_based_on_last_token(
     elif token_v in ("set", "order by", "distinct"):
         return [{"type": "column", "tables": extract_tables(full_text)}]
     elif token_v == "as":
-        # Don't suggest anything for an alias
+        table_name = _extract_preceding_table(text_before_cursor)
+        if table_name:
+            return [{"type": "smart_alias", "table": table_name}]
         return []
     elif token_v in ("show"):
         return [{"type": "show"}]
@@ -461,8 +634,6 @@ def suggest_based_on_last_token(
         tables = extract_tables(full_text)  # [(schema, table, alias), ...]
         parent = (identifier and identifier.get_parent_name()) or []
         if parent:
-            # "ON parent.<suggestion>"
-            # parent can be either a schema name or table alias
             tables = [t for t in tables if identifies(parent, *t)]
             return [
                 {"type": "column", "tables": tables},
@@ -471,10 +642,11 @@ def suggest_based_on_last_token(
                 {"type": "function", "schema": parent},
             ]
         else:
-            # ON <suggestion>
-            # Use table alias if there is one, otherwise the table name
             aliases = [alias or table for (schema, table, alias) in tables]
-            suggest = [{"type": "alias", "aliases": aliases}]
+            suggest = [
+                {"type": "join_condition", "tables": tables},
+                {"type": "alias", "aliases": aliases},
+            ]
 
             # The lists of 'aliases' could be empty if we're trying to complete
             # a GRANT query. eg: GRANT SELECT, INSERT ON <tab>
@@ -490,7 +662,6 @@ def suggest_based_on_last_token(
         return [{"type": "database"}]
 
     elif token_v.endswith(",") or is_operand(token_v) or token_v in ["=", "and", "or"]:
-        # Check if we're inside a JSON function call (after the first argument)
         if token_v.endswith(","):
             json_func_suggestion = _json_function_path_suggestion(text_before_cursor)
             if json_func_suggestion:
@@ -500,6 +671,9 @@ def suggest_based_on_last_token(
         prev_keyword, text_before_cursor = find_prev_keyword(text_before_cursor)
         enum_suggestion = _enum_value_suggestion(original_text, full_text)
         fallback = suggest_based_on_last_token(prev_keyword, text_before_cursor, full_text, identifier) if prev_keyword else []
+        # Strip join_condition from fallback: once the user is past ON and typing
+        # the actual condition (e.g. ON a.id = ...), full-condition hints are noise
+        fallback = [s for s in fallback if s.get("type") != "join_condition"]
         if enum_suggestion and _is_where_or_having(prev_keyword):
             return [enum_suggestion] + fallback
         return fallback

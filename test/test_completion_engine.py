@@ -3,7 +3,7 @@
 import pytest
 
 from mycli.packages import special
-from mycli.packages.completion_engine import suggest_type
+from mycli.packages.completion_engine import WINDOW_FUNCTION_KEYWORDS, extract_cte_names, suggest_type
 
 
 def sorted_dicts(dicts):
@@ -93,6 +93,21 @@ def test_where_equals_any_suggests_columns_or_keywords():
         {"type": "function", "schema": []},
         {"type": "keyword"},
     ])
+
+
+@pytest.mark.parametrize("expression", ["SELECT data->", "SELECT data->>"])
+def test_json_operators_suggest_json_paths(expression):
+    assert suggest_type(expression, expression) == [{"type": "json_path"}]
+
+
+def test_json_extract_argument_suggests_json_paths():
+    text = "SELECT JSON_EXTRACT(data, "
+    assert suggest_type(text, text) == [{"type": "json_path"}]
+
+
+def test_over_clause_suggests_window_keywords():
+    text = "SELECT ROW_NUMBER() OVER("
+    assert suggest_type(text, text) == [{"type": "keyword_list", "keywords": WINDOW_FUNCTION_KEYWORDS}]
 
 
 def test_lparen_suggests_cols():
@@ -321,6 +336,38 @@ def test_sub_select_table_name_completion(expression):
     ])
 
 
+def test_extract_cte_names_handles_multiple_nested_ctes():
+    text = "WITH a AS (SELECT * FROM t WHERE x IN (SELECT 1)), b AS (SELECT (SELECT 2) AS y) SELECT * FROM "
+    assert extract_cte_names(text) == ["a", "b"]
+
+
+def test_extract_cte_names_handles_recursive_ctes():
+    text = "WITH RECURSIVE `a` AS (SELECT 1), b AS (SELECT 2) SELECT * FROM "
+    assert extract_cte_names(text) == ["a", "b"]
+
+
+def test_with_clause_suggests_all_ctes():
+    text = "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM "
+    suggestion = suggest_type(text, text)
+    assert sorted_dicts(suggestion) == sorted_dicts([
+        {"type": "database"},
+        {"type": "table", "schema": []},
+        {"type": "view", "schema": []},
+        {"type": "cte", "cte_names": ["a", "b"]},
+    ])
+
+
+def test_with_clause_join_suggests_all_ctes():
+    text = "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a JOIN "
+    suggestion = suggest_type(text, text)
+    assert sorted_dicts(suggestion) == sorted_dicts([
+        {"type": "database"},
+        {"type": "table", "schema": []},
+        {"type": "view", "schema": []},
+        {"type": "cte", "cte_names": ["a", "b"]},
+    ])
+
+
 def test_sub_select_col_name_completion():
     suggestions = suggest_type("SELECT * FROM (SELECT  FROM abc", "SELECT * FROM (SELECT ")
     assert sorted_dicts(suggestions) == sorted_dicts([
@@ -331,12 +378,13 @@ def test_sub_select_col_name_completion():
     ])
 
 
-@pytest.mark.xfail
 def test_sub_select_multiple_col_name_completion():
     suggestions = suggest_type("SELECT * FROM (SELECT a, FROM abc", "SELECT * FROM (SELECT a, ")
     assert sorted_dicts(suggestions) == sorted_dicts([
         {"type": "column", "tables": [(None, "abc", None)]},
         {"type": "function", "schema": []},
+        {"type": "alias", "aliases": ["abc"]},
+        {"type": "keyword"},
     ])
 
 
@@ -396,26 +444,30 @@ def test_join_alias_dot_suggests_cols2(sql):
     ])
 
 
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "select a.x, b.y from abc a join bcd b on ",
-        "select a.x, b.y from abc a join bcd b on a.id = b.id OR ",
-    ],
-)
-def test_on_suggests_aliases(sql):
+def test_on_suggests_join_condition_and_aliases():
+    sql = "select a.x, b.y from abc a join bcd b on "
+    suggestions = suggest_type(sql, sql)
+    types = [s["type"] for s in suggestions]
+    assert "join_condition" in types
+    assert "alias" in types
+
+
+def test_on_or_strips_join_condition():
+    sql = "select a.x, b.y from abc a join bcd b on a.id = b.id OR "
     suggestions = suggest_type(sql, sql)
     assert suggestions == [{"type": "alias", "aliases": ["a", "b"]}]
 
 
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "select abc.x, bcd.y from abc join bcd on ",
-        "select abc.x, bcd.y from abc join bcd on abc.id = bcd.id AND ",
-    ],
-)
-def test_on_suggests_tables(sql):
+def test_on_suggests_join_condition_tables():
+    sql = "select abc.x, bcd.y from abc join bcd on "
+    suggestions = suggest_type(sql, sql)
+    types = [s["type"] for s in suggestions]
+    assert "join_condition" in types
+    assert "alias" in types
+
+
+def test_on_and_strips_join_condition():
+    sql = "select abc.x, bcd.y from abc join bcd on abc.id = bcd.id AND "
     suggestions = suggest_type(sql, sql)
     assert suggestions == [{"type": "alias", "aliases": ["abc", "bcd"]}]
 
@@ -435,7 +487,7 @@ def test_on_suggests_aliases_right_side(sql):
 @pytest.mark.parametrize(
     "sql",
     [
-        "select abc.x, bcd.y from abc join bcd on ",
+        "select abc.x, bcd.y from abc join bcd on abc.id = ",
         "select abc.x, bcd.y from abc join bcd on abc.id = bcd.id and ",
     ],
 )
@@ -575,16 +627,14 @@ def test_cross_join():
     ])
 
 
-@pytest.mark.parametrize(
-    "expression",
-    [
-        "SELECT 1 AS ",
-        "SELECT 1 FROM tabl AS ",
-    ],
-)
-def test_after_as(expression):
-    suggestions = suggest_type(expression, expression)
-    assert set(suggestions) == set()
+def test_after_as_column():
+    suggestions = suggest_type("SELECT 1 AS ", "SELECT 1 AS ")
+    assert suggestions == []
+
+
+def test_after_as_table():
+    suggestions = suggest_type("SELECT 1 FROM tabl AS ", "SELECT 1 FROM tabl AS ")
+    assert suggestions == [{"type": "smart_alias", "table": "tabl"}]
 
 
 @pytest.mark.parametrize(

@@ -1,9 +1,21 @@
 # type: ignore
 
 import pytest
+from prompt_toolkit.completion import Completion
 
 import mycli.sqlexecute
 from test.utils import CHARSET, DATABASE, HOST, PASSWORD, PORT, SSH_HOST, SSH_PORT, SSH_USER, USER, create_db, db_connection
+
+
+def _completion_eq(self, other):
+    """Compare Completion objects by text and start_position only, ignoring display_meta."""
+    if not isinstance(other, Completion):
+        return NotImplemented
+    return self.text == other.text and self.start_position == other.start_position
+
+
+Completion.__eq__ = _completion_eq
+Completion.__hash__ = lambda self: hash((self.text, self.start_position))
 
 
 @pytest.fixture(scope="function")

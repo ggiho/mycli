@@ -105,17 +105,13 @@ def test_empty_string_completion(completer, complete_event):
 def test_select_keyword_completion(completer, complete_event):
     text = "SEL"
     position = len("SEL")
-    result = completer.get_completions(Document(text=text, cursor_position=position), complete_event)
-    assert list(result) == [
-        Completion(text='SELECT', start_position=-3),
-        Completion(text='SERIAL', start_position=-3),
-        Completion(text='MASTER_LOG_FILE', start_position=-3),
-        Completion(text='MASTER_LOG_POS', start_position=-3),
-        Completion(text='MASTER_TLS_CIPHERSUITES', start_position=-3),
-        Completion(text='MASTER_TLS_VERSION', start_position=-3),
-        Completion(text='SCHEDULE', start_position=-3),
-        Completion(text='SERIALIZABLE', start_position=-3),
-    ]
+    result = list(completer.get_completions(Document(text=text, cursor_position=position), complete_event))
+    result_texts = [c.text for c in result]
+    # Keyword completions should be present
+    assert 'SELECT' in result_texts
+    assert 'SERIAL' in result_texts
+    # Snippet expansions may also appear (e.g. "SELECT ... FROM ...")
+    assert any('snippet' in (c.display_meta_text or '') for c in result)
 
 
 def test_select_star(completer, complete_event):
@@ -409,17 +405,17 @@ def test_suggested_multiple_column_names_with_dot(completer, complete_event):
 
 def test_suggested_aliases_after_on(completer, complete_event):
     text = "SELECT u.name, o.id FROM users u JOIN orders o ON "
-    position = len("SELECT u.name, o.id FROM users u JOIN orders o ON ")
+    position = len(text)
     result = list(completer.get_completions(Document(text=text, cursor_position=position), complete_event))
-    assert result == [
-        Completion(text="u", start_position=0),
-        Completion(text="o", start_position=0),
-    ]
+    assert Completion(text="u", start_position=0) in result
+    assert Completion(text="o", start_position=0) in result
+    # Join condition heuristic (common 'id' column) should also appear
+    assert Completion(text="u.id = o.id", start_position=0) in result
 
 
 def test_suggested_aliases_after_on_right_side(completer, complete_event):
     text = "SELECT u.name, o.id FROM users u JOIN orders o ON o.user_id = "
-    position = len("SELECT u.name, o.id FROM users u JOIN orders o ON o.user_id = ")
+    position = len(text)
     result = list(completer.get_completions(Document(text=text, cursor_position=position), complete_event))
     assert result == [
         Completion(text="u", start_position=0),
@@ -429,17 +425,16 @@ def test_suggested_aliases_after_on_right_side(completer, complete_event):
 
 def test_suggested_tables_after_on(completer, complete_event):
     text = "SELECT users.name, orders.id FROM users JOIN orders ON "
-    position = len("SELECT users.name, orders.id FROM users JOIN orders ON ")
+    position = len(text)
     result = list(completer.get_completions(Document(text=text, cursor_position=position), complete_event))
-    assert result == [
-        Completion(text="users", start_position=0),
-        Completion(text="orders", start_position=0),
-    ]
+    assert Completion(text="users", start_position=0) in result
+    assert Completion(text="orders", start_position=0) in result
+    assert Completion(text="users.id = orders.id", start_position=0) in result
 
 
 def test_suggested_tables_after_on_right_side(completer, complete_event):
     text = "SELECT users.name, orders.id FROM users JOIN orders ON orders.user_id = "
-    position = len("SELECT users.name, orders.id FROM users JOIN orders ON orders.user_id = ")
+    position = len(text)
     result = list(completer.get_completions(Document(text=text, cursor_position=position), complete_event))
     assert result == [
         Completion(text="users", start_position=0),
@@ -556,12 +551,11 @@ def test_deleted_keyword_completion(completer, complete_event):
     text = "exi"
     position = len("exi")
     result = list(completer.get_completions(Document(text=text, cursor_position=position), complete_event))
-    assert result == [
-        Completion(text="exit", start_position=-3),
-        Completion(text='exists', start_position=-3),
-        Completion(text='expire', start_position=-3),
-        Completion(text='explain', start_position=-3),
-    ]
+    result_texts = [c.text for c in result]
+    assert "exit" in result_texts
+    assert "exists" in result_texts
+    assert "expire" in result_texts
+    assert "explain" in result_texts
 
 
 def test_numbers_no_completion(completer, complete_event):

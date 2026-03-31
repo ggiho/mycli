@@ -141,6 +141,12 @@ def extract_table_identifiers(token_stream: Generator[Any, None, None]) -> Gener
 
     for item in token_stream:
         if isinstance(item, IdentifierList):
+            # sqlparse may classify malformed select lists such as "a, FROM"
+            # as an IdentifierList while parsing incomplete nested subqueries.
+            # Those are not relation lists and should not leak column names into
+            # completion table scope.
+            if any(token.ttype is Keyword and token.value.upper() == "FROM" for token in item.tokens):
+                continue
             for identifier in item.get_identifiers():
                 # Sometimes Keywords (such as FROM ) are classified as
                 # identifiers which don't have the get_real_name() method.

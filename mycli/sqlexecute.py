@@ -136,6 +136,13 @@ class SQLExecute:
             return self._all_columns_query_include_system
         return self._all_columns_query_exclude_system
 
+    foreign_keys_query = """SELECT
+        TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = %s
+        AND REFERENCED_TABLE_NAME IS NOT NULL
+        ORDER BY TABLE_NAME, ORDINAL_POSITION"""
+
     enum_values_query = """SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM information_schema.columns
         WHERE table_schema = %s AND data_type = 'enum'
         ORDER BY table_name, ordinal_position"""
@@ -506,6 +513,18 @@ class SQLExecute:
                 values = self._parse_enum_values(column_type)
                 if values:
                     yield (table_name, column_name, values)
+
+    def foreign_keys(self) -> Generator[tuple[str, str, str, str], None, None]:
+        """Yields (table, column, referenced_table, referenced_column) tuples."""
+        conn = self._ensure_connected()
+        with conn.cursor() as cur:
+            _logger.debug("Foreign Keys Query. sql: %r", self.foreign_keys_query)
+            try:
+                cur.execute(self.foreign_keys_query, (self.dbname,))
+                for row in cur:
+                    yield row
+            except Exception as e:
+                _logger.debug("FK query failed: %r", e)
 
     def databases(self) -> list[str]:
         conn = self._ensure_connected()
