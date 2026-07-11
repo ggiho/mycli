@@ -116,8 +116,6 @@ def style_factory(name: str, cli_style: dict[str, str]) -> _MergedStyle:
                 # we don't want to support tokens anymore
                 logger.error("Unhandled style / class name: %s", token)
         else:
-            # treat as prompt style name (2.0). See default style names here:
-            # https://github.com/jonathanslenders/python-prompt-toolkit/blob/master/prompt_toolkit/styles/defaults.py
             prompt_styles.append((token, cli_style[token]))
 
     override_style: Style = Style([("bottom-toolbar", "noreverse")])
