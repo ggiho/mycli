@@ -6,15 +6,6 @@ from typing import Callable
 
 from mycli.packages.sqlresult import SQLResult
 
-try:
-    if not os.environ.get('MYCLI_LLM_OFF'):
-        import llm  # noqa: F401
-
-        LLM_IMPORTED = True
-    else:
-        LLM_IMPORTED = False
-except ImportError:
-    LLM_IMPORTED = False
 from pymysql.cursors import Cursor
 
 logger = logging.getLogger(__name__)
@@ -194,7 +185,15 @@ def stub():
     raise NotImplementedError
 
 
-if LLM_IMPORTED:
+def register_llm_command() -> None:
+    """Register the \\llm special command.
+
+    Registration is cheap and does NOT import the heavy ``llm``/``openai``
+    packages: the actual import is deferred to first use inside ``handle_llm``
+    (via ``_ensure_llm``), which prints an install hint when ``llm`` is missing.
+    """
+    if os.environ.get("MYCLI_LLM_OFF"):
+        return
 
     @special_command("\\llm", "\\ai", "Interrogate LLM.", arg_type=ArgType.RAW_QUERY, case_sensitive=True)
     def llm_stub():

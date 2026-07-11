@@ -12,24 +12,29 @@ from typing import Any
 
 import click
 
-try:
-    if not os.environ.get('MYCLI_LLM_OFF'):
-        import llm
+_llm_mod = None
+_llm_cli = None
+_llm_checked = False
 
-        LLM_IMPORTED = True
-    else:
-        LLM_IMPORTED = False
-except ImportError:
-    LLM_IMPORTED = False
-try:
-    if not os.environ.get('MYCLI_LLM_OFF'):
-        from llm.cli import cli
 
-        LLM_CLI_IMPORTED = True
-    else:
-        LLM_CLI_IMPORTED = False
-except ImportError:
-    LLM_CLI_IMPORTED = False
+def _ensure_llm():
+    """Lazily import llm and llm.cli on first use."""
+    global _llm_mod, _llm_cli, _llm_checked
+    if _llm_checked:
+        return
+    _llm_checked = True
+    if os.environ.get("MYCLI_LLM_OFF"):
+        return
+    try:
+        import llm as _mod
+        _llm_mod = _mod
+    except ImportError:
+        pass
+    try:
+        from llm.cli import cli as _cli
+        _llm_cli = _cli
+    except ImportError:
+        pass
 from pymysql.cursors import Cursor
 
 from mycli.packages.special.main import Verbosity, parse_special_command
@@ -90,7 +95,7 @@ def _build_command_tree(cmd) -> dict[str, Any] | None:
     tree: dict[str, Any] = {}
     for name, subcmd in cmd.commands.items():
         if cmd.name == "models" and name == "default":
-            tree[name] = {x.model_id: None for x in llm.get_models()}
+            tree[name] = {x.model_id: None for x in _llm_mod.get_models()}
         else:
             tree[name] = _build_command_tree(subcmd)
     return tree
@@ -100,15 +105,22 @@ def build_command_tree(cmd) -> dict[str, Any]:
     return _build_command_tree(cmd) or {}
 
 
-# Generate the command tree for autocompletion
-COMMAND_TREE = build_command_tree(cli) if LLM_CLI_IMPORTED is True else {}
+_COMMAND_TREE: dict[str, Any] | None = None
+
+
+def _get_command_tree() -> dict[str, Any]:
+    global _COMMAND_TREE
+    if _COMMAND_TREE is None:
+        _ensure_llm()
+        _COMMAND_TREE = build_command_tree(_llm_cli) if _llm_cli is not None else {}
+    return _COMMAND_TREE
 
 
 def get_completions(
     tokens: list[str],
     tree: dict[str, Any] | None = None,
 ) -> list[str]:
-    tree = tree or COMMAND_TREE
+    tree = tree or _get_command_tree()
     for token in tokens:
         if token.startswith("-"):
             continue
@@ -207,12 +219,14 @@ def ensure_mycli_template(replace: bool = False) -> None:
 
 @functools.cache
 def cli_commands() -> list[str]:
-    return list(cli.commands.keys())
+    _ensure_llm()
+    return list(_llm_cli.commands.keys()) if _llm_cli is not None else []
 
 
 def handle_llm(text: str, cur: Cursor) -> tuple[str, str | None, float]:
     _, verbosity, arg = parse_special_command(text)
-    if not LLM_IMPORTED:
+    _ensure_llm()
+    if _llm_mod is None:
         output = [(None, None, None, NEED_DEPENDENCIES)]
         raise FinishIteration(output)
     if not arg.strip():

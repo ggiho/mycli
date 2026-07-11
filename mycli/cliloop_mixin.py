@@ -153,6 +153,10 @@ class CLILoopMixin:
         logger = self.logger
         self.configure_pager()
 
+        # Cheap: registers the \llm special command without importing the heavy
+        # llm/openai packages (import is deferred to first \llm use).
+        special.register_llm_command()
+
         if self.smart_completion:
             self.refresh_completions()
 

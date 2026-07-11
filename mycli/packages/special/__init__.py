@@ -43,6 +43,7 @@ from mycli.packages.special.llm import (
     is_llm_command,
     sql_using_llm,
 )
+from mycli.packages.special.main import register_llm_command
 from mycli.packages.special.main import (
     CommandNotFound,
     execute,
@@ -90,6 +91,7 @@ __all__: list[str] = [
     'is_show_favorite_query',
     'special_command',
     'split_queries',
+    'register_llm_command',
     'sql_using_llm',
     'status',
     'unset_once_if_written',
