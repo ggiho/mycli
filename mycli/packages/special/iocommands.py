@@ -375,6 +375,14 @@ def delete_favorite_query(arg: str, **_) -> list[SQLResult]:
     return [SQLResult(status=status)]
 
 
+@special_command("\\fq", "\\fq", "Toggle showing query text when running favorite queries.")
+def toggle_favorite_query_display(**_) -> list[SQLResult]:
+    new_val = not is_show_favorite_query()
+    set_show_favorite_query(new_val)
+    state = "ON" if new_val else "OFF"
+    return [SQLResult(status=f"Favorite query text display: {state}")]
+
+
 @special_command("system", "system [command]", "Execute a system shell commmand.")
 def execute_system_command(arg: str, **_) -> list[SQLResult]:
     """Execute a system shell command."""
