@@ -1,7 +1,9 @@
 from functools import partial
 import logging
+import threading
 import webbrowser
 
+import click
 import prompt_toolkit
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.enums import EditingMode
@@ -10,6 +12,7 @@ from prompt_toolkit.filters import (
     completion_is_selected,
     control_is_searchable,
     emacs_mode,
+    shift_selection_mode,
     vi_mode,
 )
 from prompt_toolkit.key_binding import KeyBindings
@@ -19,6 +22,7 @@ from prompt_toolkit.selection import SelectionType
 
 from mycli.constants import DOCS_URL
 from mycli.packages import key_binding_utils
+from mycli.packages.ptoolkit import atuin
 from mycli.packages.ptoolkit.fzf import search_history
 from mycli.packages.ptoolkit.utils import safe_invalidate_display
 
@@ -64,9 +68,89 @@ def edit_and_execute(event: KeyPressEvent) -> None:
     buff.open_in_editor(validate_and_handle=False)
 
 
+def _run_explain(mycli, sql: str, app) -> None:
+    """Run EXPLAIN for the buffered query and print a small preview.
+
+    Runs on a worker thread so the prompt stays responsive; the output is
+    plain text because prompt_toolkit owns the screen at this point.
+    """
+    sql = sql.strip().rstrip(';')
+    if not sql:
+        return
+    lowered = sql.lower().lstrip()
+    # Statements that EXPLAIN cannot take, or that are already an explain.
+    if lowered.startswith(('explain', 'desc ', 'describe ', 'show ', 'set ', '\\', '/', 'use ')):
+        return
+    try:
+        lines: list[str] = []
+        for result in mycli.sqlexecute.run(f'EXPLAIN {sql}'):
+            if not result.header or not result.rows:
+                continue
+            header = result.header if isinstance(result.header, list) else [result.header]
+            rows = [tuple('NULL' if v is None else str(v) for v in row) for row in result.rows]
+            widths = [len(h) for h in header]
+            for row in rows:
+                for i, value in enumerate(row):
+                    widths[i] = max(widths[i], len(value))
+            lines.append(' | '.join(h.ljust(widths[i]) for i, h in enumerate(header)))
+            lines.append('-+-'.join('-' * w for w in widths))
+            lines.extend(' | '.join(v.ljust(widths[i]) for i, v in enumerate(row)) for row in rows)
+        if lines:
+            click.echo('\n--- EXPLAIN Preview (F5) ---')
+            for line in lines:
+                click.echo(line)
+            click.echo('---')
+        app.invalidate()
+    except Exception as e:
+        _logger.debug('EXPLAIN preview failed: %r', e)
+
+
 def mycli_bindings(mycli) -> KeyBindings:
     """Custom key bindings for mycli."""
     kb = KeyBindings()
+
+    def _atuin_setting(key: str, default: str = '') -> str:
+        """Read a [main] value without assuming the section exists.
+
+        This runs while the bindings are built, and callers may pass a stub
+        config, so it must not index into missing sections.
+        """
+        config = getattr(mycli, 'config', None)
+        main = config.get('main', {}) if hasattr(config, 'get') else {}
+        getter = getattr(main, 'get', None)
+        return str(getter(key, default) if getter else default)
+
+    def _atuin_keys_enabled() -> bool:
+        """atuin's picker can only search what mycli recorded there."""
+        truthy = ('true', 'yes', 'on', '1')
+        return _atuin_setting('atuin_keys').lower() in truthy and _atuin_setting('atuin_history').lower() in truthy and atuin.is_available()
+
+    @kb.add('f5')
+    def _(event: KeyPressEvent) -> None:
+        """Run EXPLAIN on the buffered query and show the plan."""
+        _logger.debug('Detected F5 key.')
+        sql = event.app.current_buffer.text
+        if sql.strip():
+            threading.Thread(target=_run_explain, args=(mycli, sql, event.app), daemon=True).start()
+
+    # Registered only when enabled, so the default Up binding is untouched
+    # otherwise. ~shift_selection_mode leaves shift-selection to prompt_toolkit.
+    if _atuin_keys_enabled():
+        atuin_author = _atuin_setting('atuin_author', 'mycli')
+
+        @kb.add('up', filter=~shift_selection_mode)
+        def _(event: KeyPressEvent) -> None:
+            """Open atuin's history UI, mirroring `atuin init zsh`'s up-arrow widget."""
+            buffer = event.current_buffer
+            # atuin's widget only takes over for a single-line buffer; with a
+            # completion menu open or multiple lines, Up must still move around.
+            # This fallback is what prompt_toolkit's own "up" handler does.
+            if buffer.complete_state or '\n' in buffer.text:
+                buffer.auto_up(count=event.arg)
+                return
+            _logger.debug('Detected <up> key with atuin keys enabled.')
+            if not atuin.search_history(event, atuin_author, up_key_binding=True):
+                buffer.auto_up(count=event.arg)
 
     @kb.add('f1')
     def _(event: KeyPressEvent) -> None:

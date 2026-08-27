@@ -785,8 +785,11 @@ def suggest_special(text: str) -> list[dict[str, Any]]:
         # Trying to complete the special command itself
         return [{"type": "special"}]
 
-    if cmd in ("\\u", "/u", "\\r", "/r"):
+    if cmd in ("\\c", "/c", "\\r", "/r"):
         return [{"type": "database"}]
+
+    if cmd in ("\\u", "/u"):
+        return [{"type": "user"}]
 
     if cmd.lower() in ('use', '/use', 'connect', '/connect'):
         return [{'type': 'database'}]

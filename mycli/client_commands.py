@@ -236,7 +236,7 @@ class ClientCommandsMixin:
             "use",
             "/use <database>",
             "Change to a new database.",
-            aliases=[SpecialCommandAlias("\\u", case_sensitive=False)],
+            aliases=[SpecialCommandAlias("\\c", case_sensitive=False)],
             completion_snippet='change databases',
         )
         special.register_special_command(

@@ -8,6 +8,7 @@ from functools import partial
 import html
 from importlib import resources
 import itertools
+import logging
 import os
 import random
 import re
@@ -74,7 +75,13 @@ from mycli.packages.polars_transform import (
     prepare_polars_transform,
     run_polars_transform,
 )
-from mycli.packages.ptoolkit.history import FRECENCY_HISTORY_ENTRIES, FRECENCY_REFRESH_INTERVAL, FileHistoryWithTimestamp
+from mycli.packages.ptoolkit import atuin
+from mycli.packages.ptoolkit.history import (
+    FRECENCY_HISTORY_ENTRIES,
+    FRECENCY_REFRESH_INTERVAL,
+    AtuinHistory,
+    FileHistoryWithTimestamp,
+)
 from mycli.packages.special.utils import format_uptime, get_ssl_version, get_uptime, get_warning_count
 from mycli.packages.sql_utils import (
     extract_new_password,
@@ -143,15 +150,49 @@ def complete_while_typing_filter() -> bool:
         return not bool(re.search(r'[\s!-/:-@\[-^\{-~]', punctuation_check))
 
 
+def capture_last_result(result: SQLResult, logger: 'logging.Logger') -> None:
+    """Remember a result set so \\last and \\copy can reuse it.
+
+    Keyed off `header` plus a live cursor rather than is_select(), because for a
+    result set the status reads "N rows in set" -- its first word is a digit, so
+    is_select() is False. Draining the cursor here means the formatter has to be
+    handed the materialised list instead.
+    """
+    if not result.header or not isinstance(result.rows, Cursor):
+        return
+    try:
+        captured = list(result.rows)
+    except Exception:
+        logger.debug('Could not capture the result for \\last.', exc_info=True)
+        return
+    header = result.header if isinstance(result.header, list) else [result.header]
+    special.store_last_result(header, captured)
+    result.rows = captured
+
+
 def _create_history(mycli: 'MyCli') -> FileHistoryWithTimestamp | None:
     history_file = os.path.expanduser(os.environ.get('MYCLI_HISTFILE', mycli.config['main'].get('history_file', '~/.mycli-history')))
     if dir_path_exists(history_file):
         frecency_history_entries = int(mycli.config['main'].get('frecency_history_entries', FRECENCY_HISTORY_ENTRIES) or 0)
         frecency_refresh_interval = int(mycli.config['main'].get('frecency_refresh_interval', FRECENCY_REFRESH_INTERVAL) or 0)
-        return FileHistoryWithTimestamp(
+        atuin_history = mycli.config['main'].as_bool('atuin_history') if 'atuin_history' in mycli.config['main'] else False
+        if atuin_history and not atuin.is_available():
+            mycli.echo(
+                'Error: atuin_history is on but the atuin executable was not found. Falling back to the history file.',
+                err=True,
+                fg='red',
+            )
+            atuin_history = False
+        # AtuinHistory subclasses FileHistoryWithTimestamp, so it keeps the
+        # frecency refresh, the password-change filter and the fzf search; only
+        # the storage backend differs, with history_file kept as the tail.
+        history_class = AtuinHistory if atuin_history else FileHistoryWithTimestamp
+        extra = {'author': mycli.config['main'].get('atuin_author', 'mycli')} if atuin_history else {}
+        return history_class(
             history_file,
             frecency_history_entries=frecency_history_entries,
             frecency_refresh_interval=frecency_refresh_interval,
+            **extra,
         )
 
     mycli.echo(
@@ -503,6 +544,8 @@ def _output_results(
             if not confirm('Do you want to continue?'):
                 mycli.echo('Aborted!', err=True, fg='red')
                 break
+
+        capture_last_result(result, mycli.logger)
 
         if mycli.auto_vertical_output:
             if mycli.prompt_session is not None:

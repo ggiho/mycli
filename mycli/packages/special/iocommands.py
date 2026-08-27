@@ -84,6 +84,21 @@ def is_pager_enabled() -> bool:
     return PAGER_ENABLED
 
 
+LAST_RESULT_HEADER: list[str] | None = None
+LAST_RESULT_ROWS: list[tuple] | None = None
+
+
+def store_last_result(header: list[str] | None, rows: list[tuple] | None) -> None:
+    """Remember the last SELECT result so \\last and \\copy can reuse it."""
+    global LAST_RESULT_HEADER, LAST_RESULT_ROWS
+    LAST_RESULT_HEADER = header
+    LAST_RESULT_ROWS = rows
+
+
+def get_last_result() -> tuple[list[str] | None, list[tuple] | None]:
+    return LAST_RESULT_HEADER, LAST_RESULT_ROWS
+
+
 def set_show_favorite_query(val: bool) -> None:
     global SHOW_FAVORITE_QUERY
     SHOW_FAVORITE_QUERY = val
@@ -741,9 +756,62 @@ def _edit_dsn_alias(alias: str) -> list[SQLResult]:
 
 
 @special_command(
+    "\\fq",
+    "/fq",
+    "Toggle showing query text when running favorite queries.",
+    completion_snippet='toggle favorite query echo',
+)
+def toggle_favorite_query_display(**_) -> list[SQLResult]:
+    new_val = not is_show_favorite_query()
+    set_show_favorite_query(new_val)
+    state = "ON" if new_val else "OFF"
+    return [SQLResult(status=f"Favorite query text display: {state}")]
+
+
+@special_command(
+    "\\last",
+    "/last",
+    "Show the last query result again.",
+    arg_type=ArgType.NO_ARGUMENT,
+    case_sensitive=True,
+    completion_snippet='redisplay last result',
+)
+def show_last_result(**_) -> list[SQLResult]:
+    header, rows = get_last_result()
+    if header is None or rows is None:
+        return [SQLResult(status="No previous result.")]
+    return [SQLResult(rows=list(rows), header=header, status=f"{len(rows)} row(s) from last result")]
+
+
+@special_command(
+    "\\copy",
+    "/copy",
+    "Copy the last result to the system clipboard.",
+    arg_type=ArgType.NO_ARGUMENT,
+    case_sensitive=True,
+    completion_snippet='copy last result to clipboard',
+)
+def copy_last_result(**_) -> list[SQLResult]:
+    header, rows = get_last_result()
+    if header is None or rows is None:
+        return [SQLResult(status="No previous result to copy.")]
+
+    lines = ["\t".join(header)]
+    lines.extend("\t".join("NULL" if v is None else str(v) for v in row) for row in rows)
+    text = "\n".join(lines)
+
+    try:
+        pyperclip.copy(text)
+    except Exception as e:
+        return [SQLResult(status=f"Unable to copy to clipboard: {e}", is_error=True)]
+    return [SQLResult(status=f"Copied {len(rows)} row(s) to the clipboard.")]
+
+
+@special_command(
     "system",
     "/system [-r] <command>",
     "Execute a system shell command (raw mode with -r).",
+    aliases=[SpecialCommandAlias("\\!", case_sensitive=True)],
     completion_snippet='execute system command',
 )
 def execute_system_command(arg: str, **_) -> list[SQLResult]:

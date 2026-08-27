@@ -5,12 +5,14 @@ from itertools import islice
 import logging
 import os
 import re
+import subprocess
 import threading
 
 from prompt_toolkit.history import FileHistory
 from sqlglot import Token, TokenType, tokenize
 from sqlglot.errors import TokenError
 
+from mycli.packages.ptoolkit import atuin
 from mycli.packages.sql_utils import is_password_change
 
 logger = logging.getLogger(__name__)
@@ -196,3 +198,111 @@ class FileHistoryWithTimestamp(FileHistory):
                 add()
 
         return list(reversed(history_with_timestamp))
+
+
+class AtuinHistory(FileHistoryWithTimestamp):
+    """History stored in atuin instead of the history file.
+
+    Subclasses :class:`FileHistoryWithTimestamp` rather than
+    :class:`~prompt_toolkit.history.History` so that everything keyed off that
+    type keeps working: frecency refresh, the ``is_password_change`` filter in
+    :meth:`FileHistoryWithTimestamp.append_string`, the fzf reverse search, and
+    the ``\\#`` rehash hook.
+
+    Entries are tagged with an author (``mycli`` by default) so SQL stays
+    distinguishable from shell history::
+
+        atuin search --author mycli
+
+    Only what this class wrote lives in atuin, so the inherited file reader is
+    used as the tail: entries from ``filename`` are appended after the atuin
+    ones. Queries predating the switch stay reachable without being imported,
+    and nothing new is written to the file.
+
+    Behaviour of the atuin CLI this relies on (verified against atuin 18.19):
+
+    * ``atuin search`` prints oldest-first; ``--reverse`` is what yields the
+      newest-first order :meth:`load_history_strings` must return. Its
+      ``--help`` describes the opposite.
+    * ``--include-duplicates`` is required, because frecency scores how often
+      an entry appears.
+    * ``history end`` is not called: it demands an exit code we do not have,
+      since the line is stored on accept, before the query runs. atuin leaves
+      such entries at ``exit=-1``, which is the honest value.
+    """
+
+    #: atuin is a local sqlite read; this only guards against a wedged process.
+    TIMEOUT = 5.0
+    #: {command} goes last so a tab inside the SQL cannot shift the split.
+    _FORMAT = "{time}\t{command}"
+
+    def __init__(self, filename: _StrOrBytesPath, author: str = "mycli", limit: int = 5000, **kwargs) -> None:
+        self.author = author
+        self.limit = limit
+        super().__init__(filename, **kwargs)
+
+    def _atuin(self, *args: str, env: Mapping[str, str] | None = None) -> str | None:
+        """Run atuin and return stdout, or None if it could not be run."""
+        try:
+            proc = subprocess.run(("atuin", *args), capture_output=True, text=True, timeout=self.TIMEOUT, env=env)
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.debug('atuin %s failed: %s', args[:1], e)
+            return None
+        if proc.returncode != 0:
+            logger.debug('atuin %s exited %s: %s', args[:1], proc.returncode, proc.stderr.strip())
+            return None
+        return proc.stdout
+
+    def _search(self, fmt: str | None) -> list[str] | None:
+        args = [
+            'search',
+            '--author',
+            self.author,
+            '--include-duplicates',
+            '--reverse',
+            '--print0',
+            '--limit',
+            str(self.limit),
+        ]
+        args += ['--format', fmt] if fmt else ['--cmd-only']
+        out = self._atuin(*args)
+        if out is None:
+            return None
+        # --print0 terminates every record, so the trailing split is empty.
+        return [record for record in out.split('\0') if record]
+
+    def load_history_strings(self) -> Iterable[str]:
+        entries = self._search(None)
+        if entries is None:
+            logger.debug('atuin unreadable; using the history file only')
+            entries = []
+        # The inherited reader supplies the pre-atuin tail.
+        entries.extend(super().load_history_strings())
+        return entries
+
+    def store_string(self, string: str) -> None:
+        # append_string() has already dropped password changes and updated the
+        # frecency counters; only the storage backend differs here.
+        self._atuin(
+            'history',
+            'start',
+            '--author',
+            self.author,
+            string,
+            env=dict(os.environ, ATUIN_SESSION=atuin.session_id(self.author)),
+        )
+
+    def load_history_with_timestamp(self) -> list[tuple[str, str]]:
+        records = self._search(self._FORMAT)
+        if records is None:
+            return super().load_history_with_timestamp()
+        entries = []
+        for record in records:
+            timestamp, separator, command = record.partition('\t')
+            if not separator:
+                # Malformed record: keep it as a command rather than silently
+                # presenting the query text as a timestamp.
+                timestamp, command = '', timestamp
+            entries.append((command, timestamp))
+        entries.extend(super().load_history_with_timestamp())
+        return entries

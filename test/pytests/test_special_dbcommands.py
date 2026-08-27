@@ -122,9 +122,14 @@ def test_list_tables_verbose_preserves_field_results():
     assert 'CREATE TABLE' in result.postamble
 
 
-def test_u_suggests_databases():
-    suggestions = suggest_type("\\u ", "\\u ")
+def test_c_suggests_databases():
+    suggestions = suggest_type("\\c ", "\\c ")
     assert sorted_dicts(suggestions) == sorted_dicts([{"type": "database"}])
+
+
+def test_u_suggests_users():
+    suggestions = suggest_type("\\u ", "\\u ")
+    assert sorted_dicts(suggestions) == sorted_dicts([{"type": "user"}])
 
 
 def test_describe_table():

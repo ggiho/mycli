@@ -2,6 +2,7 @@ import logging
 import os
 import platform
 
+from pymysql import Error as MySQLError
 from pymysql import ProgrammingError
 from pymysql.cursors import Cursor
 
@@ -58,6 +59,107 @@ def list_tables(
 
     # todo missing a status line because sqlexecute.get_result was not used
     return [SQLResult(header=header, rows=results, postamble=postamble)]
+
+
+def _escape_string_literal(value: str) -> str:
+    """Escape a MySQL string literal to prevent SQL injection."""
+    return value.replace('\\', '\\\\').replace("'", "\\'")
+
+
+# account_locked/password_expired only exist on MySQL 5.7.6+; fall back for older servers.
+_USER_LIST_QUERY = (
+    "SELECT user, host, plugin, account_locked AS locked, password_expired AS pw_expired, "
+    "max_user_connections AS max_conn FROM mysql.user ORDER BY user, host"
+)
+_USER_LIST_QUERY_LEGACY = "SELECT user, host, plugin FROM mysql.user ORDER BY user, host"
+
+
+def _current_user_info(cur: Cursor, status: str) -> list[SQLResult]:
+    """Session identity plus own grants, for accounts that cannot read mysql.user."""
+    query = "SELECT CURRENT_USER() AS `current_user`, USER() AS `connected_as`, DATABASE() AS `database`"
+    logger.debug(query)
+    cur.execute(query)
+    headers = [x[0] for x in cur.description] if cur.description else None
+    results = [SQLResult(rows=cur.fetchall(), header=headers, status=status)]
+
+    query = "SHOW GRANTS FOR CURRENT_USER()"
+    logger.debug(query)
+    try:
+        cur.execute(query)
+    except MySQLError as e:
+        logger.debug("SHOW GRANTS FOR CURRENT_USER() failed: %s", e)
+        return results
+
+    headers = [x[0] for x in cur.description] if cur.description else None
+    results.append(SQLResult(rows=cur.fetchall(), header=headers, status=""))
+    return results
+
+
+def _list_all_users(cur: Cursor) -> list[SQLResult]:
+    for query in (_USER_LIST_QUERY, _USER_LIST_QUERY_LEGACY):
+        logger.debug(query)
+        try:
+            cur.execute(query)
+        except MySQLError as e:
+            logger.debug("User list query failed: %s", e)
+            continue
+        if cur.description:
+            headers = [x[0] for x in cur.description]
+            return [SQLResult(rows=cur.fetchall(), header=headers, status="")]
+
+    return _current_user_info(cur, "Cannot read mysql.user; showing the current session instead.")
+
+
+def _accounts_for(cur: Cursor, user: str) -> list[tuple[str, str]] | None:
+    """Every host the named user is defined for; None when mysql.user is unreadable."""
+    query = f"SELECT host FROM mysql.user WHERE user = '{_escape_string_literal(user)}' ORDER BY host"
+    logger.debug(query)
+    try:
+        cur.execute(query)
+    except MySQLError as e:
+        logger.debug("Host lookup failed: %s", e)
+        return None
+    return [(user, row[0]) for row in cur.fetchall()]
+
+
+def _show_user_grants(cur: Cursor, spec: str) -> list[SQLResult]:
+    if "@" in spec:
+        user, _, host = spec.partition("@")
+        accounts = [(user.strip().strip("'\"`"), host.strip().strip("'\"`"))]
+    else:
+        user = spec.strip("'\"`")
+        accounts = _accounts_for(cur, user)
+        if accounts is None:
+            accounts = [(user, "%")]  # cannot enumerate hosts, so try the common case
+        elif not accounts:
+            return [SQLResult(status=f"No such user: {user}")]
+
+    results: list[SQLResult] = []
+    for user, host in accounts:
+        query = f"SHOW GRANTS FOR '{_escape_string_literal(user)}'@'{_escape_string_literal(host)}'"
+        logger.debug(query)
+        try:
+            cur.execute(query)
+        except MySQLError as e:
+            results.append(SQLResult(status=f"{user}@{host}: {e}"))
+            continue
+        headers = [x[0] for x in cur.description] if cur.description else None
+        results.append(SQLResult(rows=cur.fetchall(), header=headers, status=""))
+    return results
+
+
+@special_command(
+    "\\u",
+    "/u [user]",
+    "List users, or show grants for one user.",
+    arg_type=ArgType.PARSED_QUERY,
+    case_sensitive=True,
+    completion_snippet='list users or show grants',
+)
+def list_users(cur: Cursor, arg: str | None = None, **_) -> list[SQLResult]:
+    if arg and arg.strip():
+        return _show_user_grants(cur, arg.strip())
+    return _list_all_users(cur)
 
 
 @special_command(
