@@ -123,6 +123,7 @@ def _accounts_for(cur: Cursor, user: str) -> list[tuple[str, str]] | None:
 
 
 def _show_user_grants(cur: Cursor, spec: str) -> list[SQLResult]:
+    accounts: list[tuple[str, str]] | None
     if "@" in spec:
         user, _, host = spec.partition("@")
         accounts = [(user.strip().strip("'\"`"), host.strip().strip("'\"`"))]

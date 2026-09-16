@@ -116,7 +116,8 @@ def mycli_bindings(mycli) -> KeyBindings:
         config, so it must not index into missing sections.
         """
         config = getattr(mycli, 'config', None)
-        main = config.get('main', {}) if hasattr(config, 'get') else {}
+        config_getter = getattr(config, 'get', None)
+        main = config_getter('main', {}) if config_getter else {}
         getter = getattr(main, 'get', None)
         return str(getter(key, default) if getter else default)
 
