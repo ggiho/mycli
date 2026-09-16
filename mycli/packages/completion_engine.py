@@ -806,7 +806,10 @@ def suggest_special(text: str) -> list[dict[str, Any]]:
     if cmd in ["\\fs", "/fs", "\\fd", "/fd"]:
         return [{"type": "favoritequery"}]
 
-    if cmd in ["\\dt", "/dt", "\\dt+", "/dt+"]:
+    if cmd in ("\\t", "/t"):
+        return [{"type": "database"}]
+
+    if cmd in ["\\dt", "/dt", "\\dt+", "/dt+", "\\d", "/d"]:
         return [
             {"type": "table", "schema": []},
             {"type": "view", "schema": []},

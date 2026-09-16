@@ -199,7 +199,6 @@ def disable_pager() -> list[SQLResult]:
     "Toggle timing of queries.",
     arg_type=ArgType.NO_ARGUMENT,
     case_sensitive=True,
-    aliases=[SpecialCommandAlias("\\t", case_sensitive=True)],
     completion_snippet='toggle query timing',
 )
 def toggle_timing() -> list[SQLResult]:

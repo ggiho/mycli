@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
     "List or describe tables.",
     arg_type=ArgType.PARSED_QUERY,
     case_sensitive=True,
+    aliases=[SpecialCommandAlias("\\d", case_sensitive=True)],
     completion_snippet='list or describe tables',
 )
 def list_tables(
@@ -59,6 +60,27 @@ def list_tables(
 
     # todo missing a status line because sqlexecute.get_result was not used
     return [SQLResult(header=header, rows=results, postamble=postamble)]
+
+
+@special_command(
+    "\\t",
+    "/t[+] [database]",
+    "List tables in the current or named database.",
+    arg_type=ArgType.PARSED_QUERY,
+    case_sensitive=True,
+    completion_snippet='list tables',
+)
+def list_tables_only(cur: Cursor, arg: str | None = None, command_verbosity: bool = False, **_) -> list[SQLResult]:
+    """List tables without describing them. Unlike \\dt, the argument names a database."""
+    show = "SHOW FULL TABLES" if command_verbosity else "SHOW TABLES"
+    query = f"{show} FROM {arg}" if arg else show
+    logger.debug(query)
+    cur.execute(query)
+    if not cur.description:
+        return [SQLResult()]
+    header = [x[0] for x in cur.description]
+    # todo missing a status line because sqlexecute.get_result was not used
+    return [SQLResult(header=header, rows=cur)]
 
 
 def _escape_string_literal(value: str) -> str:
@@ -169,6 +191,10 @@ def list_users(cur: Cursor, arg: str | None = None, **_) -> list[SQLResult]:
     "List databases.",
     arg_type=ArgType.RAW_QUERY,
     case_sensitive=True,
+    aliases=[
+        SpecialCommandAlias("\\dn", case_sensitive=True),
+        SpecialCommandAlias("\\list", case_sensitive=True),
+    ],
     completion_snippet='list databases',
 )
 def list_databases(cur: Cursor, **_) -> list[SQLResult]:

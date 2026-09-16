@@ -6,7 +6,7 @@ from pymysql import ProgrammingError
 
 from mycli.packages.completion_engine import suggest_type
 from mycli.packages.special import dbcommands
-from mycli.packages.special.dbcommands import list_databases, list_tables, status
+from mycli.packages.special.dbcommands import list_databases, list_tables, list_tables_only, status
 from test.pytests.test_completion_engine import sorted_dicts
 
 
@@ -161,6 +161,31 @@ def test_list_tables_nonverbose_and_empty_result() -> None:
     described = list_tables(cursor, arg='missing_table')
     assert described[0].header is None
     assert described[0].rows is None
+
+
+def test_t_suggests_databases():
+    suggestions = suggest_type("\\t ", "\\t ")
+    assert sorted_dicts(suggestions) == sorted_dicts([{"type": "database"}])
+
+
+def test_list_tables_only_targets_a_database() -> None:
+    cursor = FakeCursor(
+        query_results={
+            'SHOW TABLES': {'description': [('Tables_in_test',)]},
+            'SHOW TABLES FROM otherdb': {'description': [('Tables_in_otherdb',)]},
+            'SHOW FULL TABLES FROM otherdb': {'description': [('Tables_in_otherdb',), ('Table_type',)]},
+        }
+    )
+
+    current = list_tables_only(cursor)
+    assert current[0].header == ['Tables_in_test']
+    assert current[0].rows is cursor
+
+    other = list_tables_only(cursor, arg='otherdb')
+    assert other[0].header == ['Tables_in_otherdb']
+
+    full = list_tables_only(cursor, arg='otherdb', command_verbosity=True)
+    assert full[0].header == ['Tables_in_otherdb', 'Table_type']
 
 
 def test_list_databases_with_and_without_description() -> None:

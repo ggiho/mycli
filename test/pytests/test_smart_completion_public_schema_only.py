@@ -105,7 +105,9 @@ def test_special_name_completion(completer, complete_event):
     position = len("\\d")
     result = completer.get_completions(Document(text=text, cursor_position=position), complete_event)
     assert list(result) == [
+        Completion(text="\\d", start_position=-2, display_meta='list or describe tables'),
         Completion(text="\\dt", start_position=-2, display_meta='list or describe tables'),
+        Completion(text="\\dn", start_position=-2, display_meta='list databases'),
         Completion(text="\\dsn", start_position=-2, display_meta='manage saved DSNs'),
     ]
 
