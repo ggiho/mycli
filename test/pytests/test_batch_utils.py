@@ -99,3 +99,13 @@ def test_statements_from_filehandle_continues_when_tokenizer_returns_no_tokens(m
         ('select 1;', 0),
         ('select 2;', 1),
     ]
+
+
+def test_statements_from_filehandle_strips_invisible_characters() -> None:
+    """`source file.sql` never passes through the paste handler."""
+    statements = collect_statements("select\u00a0\u00a01\u3000from t;\nselect 'kept\u00a0here';\n")
+
+    assert statements == [
+        ('select  1 from t;', 0),
+        ("select 'kept\u00a0here';", 1),
+    ]

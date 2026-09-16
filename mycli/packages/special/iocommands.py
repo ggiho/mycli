@@ -35,6 +35,7 @@ from mycli.packages.special.main import ArgType, SpecialCommandAlias, special_co
 from mycli.packages.special.main import execute as special_execute
 from mycli.packages.special.utils import compute_current_dsn, handle_cd_command
 from mycli.packages.sqlresult import SQLResult
+from mycli.packages.whitespace import strip_invisible_outside_literals
 
 sqlparse.engine.grouping.MAX_GROUPING_DEPTH = None  # type: ignore[assignment]
 sqlparse.engine.grouping.MAX_GROUPING_TOKENS = None  # type: ignore[assignment]
@@ -303,7 +304,7 @@ def open_external_editor(filename: str | None = None, sql: str | None = None) ->
                 query = f.read()
         except IOError:
             message = f'Error reading file: {filename}'
-        return (query.rstrip('\n'), message)
+        return (strip_invisible_outside_literals(query.rstrip('\n')), message)
 
     # Populate the editor buffer with the partial sql (if available) and a
     # placeholder comment.
@@ -316,7 +317,7 @@ def open_external_editor(filename: str | None = None, sql: str | None = None) ->
         # Empty string is ok.
         query = sql
 
-    return (query, None)
+    return (strip_invisible_outside_literals(query), None)
 
 
 def clip_command(command: str) -> bool:

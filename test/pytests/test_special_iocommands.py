@@ -1730,3 +1730,22 @@ def test_watch_query_confirmed_without_description_and_keyboard_interrupt(monkey
 
     assert secho_calls == ['Your call!', '']
     assert iocommands.is_pager_enabled() is True
+
+
+def test_open_external_editor_strips_invisible_characters(monkeypatch, tmp_path: Path) -> None:
+    """Text typed or pasted inside $EDITOR never reaches the paste handler."""
+    marker = '# Type your query above this line.\n'
+    monkeypatch.setattr(iocommands.click, 'edit', lambda text, extension: f'select\u00a0\u00a01\n\n{marker}')
+
+    query, message = iocommands.open_external_editor(sql='select 1')
+
+    assert query == 'select  1'
+    assert message is None
+
+    filename = tmp_path / 'edited.sql'
+    filename.write_text("select\u00a01, 'kept\u00a0here'\n", encoding='utf-8')
+    monkeypatch.setattr(iocommands.click, 'edit', lambda filename: None)
+
+    query, message = iocommands.open_external_editor(filename=str(filename))
+
+    assert query == "select 1, 'kept\u00a0here'"

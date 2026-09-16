@@ -693,3 +693,43 @@ def test_alt_enter_binding_validates_or_inserts_newline(
 
     assert event.app.current_buffer.validate_calls == expected_validate_calls
     assert event.app.current_buffer.inserted_text == expected_inserted_text
+
+
+def test_normalize_pasted_text_replaces_invisible_characters() -> None:
+    pasted = 'id\u00a0\u00a0INT,\u3000name\u200b\u2007VARCHAR(1)\u2028end\ufeff'
+
+    assert key_bindings.normalize_pasted_text(pasted) == 'id  INT, name VARCHAR(1)\nend'
+
+
+def test_normalize_pasted_text_keeps_line_endings_and_visible_text() -> None:
+    assert key_bindings.normalize_pasted_text('a\r\nb\rc') == 'a\nb\nc'
+    assert key_bindings.normalize_pasted_text("SELECT '한글 값';") == "SELECT '한글 값';"
+
+
+def test_bracketed_paste_normalizes_before_insert() -> None:
+    mycli = DummyMyCli(DummyKeysConfig())
+    kb = key_bindings.mycli_bindings(mycli)
+    event = make_event()
+    event.data = 'a\u00a0b'
+
+    binding_handler(kb, Keys.BracketedPaste)(event)
+
+    assert event.current_buffer.inserted_text == ['a b']
+
+
+def test_bracketed_paste_binding_overrides_prompt_toolkit_default() -> None:
+    """The default handler inserts the payload as-is, so ours must win the merge."""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput as PtkDummyOutput
+
+    mycli = DummyMyCli(DummyKeysConfig())
+    with create_pipe_input() as pipe:
+        pipe.send_text('\x1b[200~id\u00a0\u00a0INT\x1b[201~\r')
+        session: PromptSession = PromptSession(
+            input=pipe,
+            output=PtkDummyOutput(),
+            key_bindings=key_bindings.mycli_bindings(mycli),
+            multiline=False,
+        )
+        assert session.prompt() == 'id  INT'

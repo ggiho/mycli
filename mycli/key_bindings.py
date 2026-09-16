@@ -18,6 +18,7 @@ from prompt_toolkit.filters import (
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.named_commands import register as ptoolkit_register
 from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.selection import SelectionType
 
 from mycli.constants import DOCS_URL
@@ -25,8 +26,20 @@ from mycli.packages import key_binding_utils
 from mycli.packages.ptoolkit import atuin
 from mycli.packages.ptoolkit.fzf import search_history
 from mycli.packages.ptoolkit.utils import safe_invalidate_display
+from mycli.packages.whitespace import strip_invisible_outside_literals
 
 _logger = logging.getLogger(__name__)
+
+
+def normalize_pasted_text(data: str) -> str:
+    """Turn a clipboard payload into text MySQL can parse.
+
+    Only invisible characters outside quoted literals are touched; nothing
+    visible is rewritten.
+    """
+    # prompt_toolkit's own paste handler does this, and overriding it drops it.
+    data = data.replace('\r\n', '\n').replace('\r', '\n')
+    return strip_invisible_outside_literals(data)
 
 
 @Condition
@@ -412,5 +425,10 @@ def mycli_bindings(mycli) -> KeyBindings:
             event.app.current_buffer.validate_and_handle()
         else:
             event.app.current_buffer.insert_text("\n")
+
+    @kb.add(Keys.BracketedPaste)
+    def _(event: KeyPressEvent) -> None:
+        """Paste, dropping the invisible characters rich-text apps inject."""
+        event.current_buffer.insert_text(normalize_pasted_text(event.data))
 
     return kb

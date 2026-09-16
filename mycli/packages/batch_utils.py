@@ -3,6 +3,8 @@ from typing import IO, Generator
 import sqlglot
 import sqlparse
 
+from mycli.packages.whitespace import strip_invisible_outside_literals
+
 MAX_MULTILINE_BATCH_STATEMENT = 5000
 
 
@@ -24,7 +26,7 @@ def statements_from_filehandle(file_h: IO) -> Generator[tuple[str, int], None, N
                 # The advantage of sqlparse for splitting is that it preserves the input.
                 # https://github.com/tobymao/sqlglot/issues/2587#issuecomment-1823109501
                 for statement in sqlparse.split(statements):
-                    yield (statement, batch_counter)
+                    yield (strip_invisible_outside_literals(statement), batch_counter)
                     batch_counter += 1
                 statements = ''
                 line_counter = 0
@@ -32,5 +34,5 @@ def statements_from_filehandle(file_h: IO) -> Generator[tuple[str, int], None, N
             continue
     if statements:
         for statement in sqlparse.split(statements):
-            yield (statement, batch_counter)
+            yield (strip_invisible_outside_literals(statement), batch_counter)
             batch_counter += 1
