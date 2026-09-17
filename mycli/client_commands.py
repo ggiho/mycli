@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Generator, Mapping
+from collections.abc import Callable, Generator, Mapping
 import logging
 import os
 import re
@@ -19,10 +19,13 @@ from mycli.packages.filepaths import dir_path_exists
 from mycli.packages.interactive_utils import confirm_destructive_query
 from mycli.packages.ptoolkit.history import FileHistoryWithTimestamp
 from mycli.packages.special import main as special_main
-from mycli.packages.special.iocommands import expand_favorite_query
+from mycli.packages.special.favoritequeries import FavoriteQueries
+from mycli.packages.special.iocommands import execute_favorite_query, expand_favorite_query
 from mycli.packages.special.main import ArgType, SpecialCommandAlias
 from mycli.packages.sqlresult import SQLResult
 from mycli.sqlexecute import SQLExecute
+
+logger = logging.getLogger(__name__)
 
 CONFIG_COMMAND_USAGE = '''Syntax:
   /config get <key>
@@ -225,6 +228,7 @@ class ClientCommandsMixin:
         myclirc_path: str
         prompt_session: Any
         prompt_format: str
+        _favorite_commands: set[str]
 
         def refresh_completions(self, reset: bool = False) -> list[SQLResult]: ...
         def reconnect(self, database: str = '') -> bool: ...
@@ -299,6 +303,50 @@ class ClientCommandsMixin:
             'Inspect settings from config files.',
             completion_snippet='inspect config file settings',
         )
+        self.register_favorite_commands()
+
+    def _favorite_command_handler(self, name: str) -> Callable:
+        def run_favorite(cur: Any, arg: str = '', **_) -> Generator[SQLResult, None, None]:
+            yield from execute_favorite_query(cur, f'{name} {arg}'.strip())
+
+        return run_favorite
+
+    def register_favorite_commands(self) -> None:
+        """Give every favorite query a command of its own name.
+
+        `/f ps` is by far the commonest way to reach a favorite, and `/ps` is
+        shorter. The handler defers to `/f`, so arguments behave identically and
+        an edited query body is picked up without re-registering.
+
+        A name is skipped when it cannot be typed as one command, or when it
+        would shadow a real one -- a favorite must never quietly replace `/dt`.
+        """
+        favorites = getattr(FavoriteQueries, 'instance', None)
+        if favorites is None:
+            return
+        registered: set[str] = getattr(self, '_favorite_commands', set())
+        for name in favorites.list():
+            # list() yields None for a query the config could not clean up.
+            if not name or len(name.split()) != 1:
+                logger.debug('Not registering favorite %r as a command: it is not a single word.', name)
+                continue
+            command = f'\\{name}'
+            if name not in registered and (command in special_main.COMMANDS or f'/{name}' in special_main.COMMANDS):
+                logger.debug('Not registering favorite %r as a command: %s already exists.', name, command)
+                continue
+            query = favorites.get(name) or ''
+            special.register_special_command(
+                self._favorite_command_handler(name),
+                command,
+                f'/{name} [args..] [--key=value]',
+                f'Run the {name} favorite query.',
+                arg_type=ArgType.PARSED_QUERY,
+                case_sensitive=True,
+                hidden=True,
+                completion_snippet=f'favorite: {query[:60]}',
+            )
+            registered.add(name)
+        self._favorite_commands = registered
 
     def manual_reconnect(self, arg: str = "", **_) -> Generator[SQLResult, None, None]:
         """
@@ -313,6 +361,7 @@ class ClientCommandsMixin:
             yield self.change_db(arg).send(None)
 
     def rehash(self) -> list[SQLResult]:
+        self.register_favorite_commands()
         prompt_session = getattr(self, 'prompt_session', None)
         history = getattr(prompt_session, 'history', None)
         if isinstance(history, FileHistoryWithTimestamp):

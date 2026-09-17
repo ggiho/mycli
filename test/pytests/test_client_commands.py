@@ -14,6 +14,7 @@ from mycli import client_commands
 from mycli.client_commands import ClientCommandsMixin
 from mycli.packages import special
 from mycli.packages.special import main as special_main
+from mycli.packages.special.favoritequeries import FavoriteQueries
 from mycli.packages.sqlresult import SQLResult
 
 
@@ -1128,3 +1129,69 @@ def test_initialize_logging_reports_invalid_log_path() -> None:
     client.initialize_logging()
 
     assert client.echo_calls == [(('Error: Unable to open the log file "/does/not/exist/mycli.log".',), {'err': True, 'fg': 'red'})]
+
+
+def use_favorites(**queries: str) -> None:
+    FavoriteQueries.instance = FavoriteQueries({FavoriteQueries.section_name: dict(queries)}, None)
+
+
+def test_favorites_register_as_hidden_commands() -> None:
+    use_favorites(ps='SELECT 1 FROM processlist')
+    client = DummyClient()
+
+    client.register_favorite_commands()
+
+    command = special_main.COMMANDS['\\ps']
+    assert command.hidden is True  # keeps /? readable while still completing
+    assert command.completion_snippet == 'favorite: SELECT 1 FROM processlist'
+    assert special.is_special_command('\\ps')
+    assert special.is_special_command('/ps')
+
+
+def test_favorite_never_shadows_an_existing_command() -> None:
+    original = special_main.COMMANDS['\\dt'].handler
+    use_favorites(dt='SELECT 1')
+    client = DummyClient()
+
+    client.register_favorite_commands()
+
+    assert special_main.COMMANDS['\\dt'].handler is original
+
+
+def test_favorite_name_must_be_a_single_word() -> None:
+    use_favorites(**{'two words': 'SELECT 1'})
+    client = DummyClient()
+
+    client.register_favorite_commands()
+
+    assert not special.is_special_command('\\two words')
+
+
+def test_favorite_command_forwards_its_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    forwarded: list[str] = []
+
+    def fake_execute(cur: Any, arg: str, **_: Any) -> Generator[SQLResult, None, None]:
+        forwarded.append(arg)
+        yield SQLResult(status='ok')
+
+    monkeypatch.setattr(client_commands, 'execute_favorite_query', fake_execute)
+    use_favorites(idx='SELECT 1')
+    client = DummyClient()
+    client.register_favorite_commands()
+
+    list(special_main.COMMANDS['\\idx'].handler(cur=None, arg='--t=agreement'))
+    list(special_main.COMMANDS['\\idx'].handler(cur=None, arg=''))
+
+    assert forwarded == ['idx --t=agreement', 'idx']
+
+
+def test_rehash_registers_a_favorite_saved_after_startup() -> None:
+    use_favorites(ps='SELECT 1')
+    client = DummyClient()
+    client.register_favorite_commands()
+    assert not special.is_special_command('\\brandnew')
+
+    use_favorites(ps='SELECT 1', brandnew='SELECT 42')
+    client.rehash()
+
+    assert special.is_special_command('\\brandnew')
