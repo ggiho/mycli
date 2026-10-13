@@ -77,20 +77,21 @@ def test_session_id_differs_from_pgclis_scheme():
 
 
 def test_load_is_newest_first_and_keeps_duplicates(fake_atuin, history):
-    fake = fake_atuin(stdout='SELECT 2\0SELECT 1\0SELECT 1\0')
+    fake = fake_atuin(stdout='SELECT 1\0SELECT 1\0SELECT 2\0')
     assert list(history().load_history_strings()) == ['SELECT 2', 'SELECT 1', 'SELECT 1']
     argv = fake.calls[0]
     assert argv[:2] == ['atuin', 'search']
     assert argv[argv.index('--author') + 1] == 'mycli'
     # Duplicates feed the frecency score.
     assert '--include-duplicates' in argv
-    # atuin prints oldest first; without --reverse the up-arrow order inverts.
-    assert '--reverse' in argv
+    # --reverse would make --limit pick the oldest entries; the order is flipped here instead.
+    assert '--reverse' not in argv
+    assert argv[argv.index('--limit') + 1] == '5000'
     assert '--cmd-only' in argv
 
 
 def test_load_preserves_multiline_entries(fake_atuin, history):
-    fake_atuin(stdout='SELECT a,\n       b\n  FROM t\0SELECT 1\0')
+    fake_atuin(stdout='SELECT 1\0SELECT a,\n       b\n  FROM t\0')
     assert list(history().load_history_strings()) == ['SELECT a,\n       b\n  FROM t', 'SELECT 1']
 
 
@@ -266,3 +267,8 @@ def test_up_not_rebound_when_atuin_history_is_off(monkeypatch):
 def test_binding_construction_tolerates_a_config_without_main():
     """Bindings are built with stub configs in tests and other callers."""
     assert _up_bindings({}) == []
+
+
+def test_timestamped_history_is_newest_first(fake_atuin, history):
+    fake_atuin(stdout='', formatted='2026-01-01 00:00:00\told\x002026-01-02 00:00:00\tnew\x00')
+    assert [command for command, _ in history().load_history_with_timestamp()] == ['new', 'old']

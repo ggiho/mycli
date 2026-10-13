@@ -221,9 +221,11 @@ class AtuinHistory(FileHistoryWithTimestamp):
 
     Behaviour of the atuin CLI this relies on (verified against atuin 18.19):
 
-    * ``atuin search`` prints oldest-first; ``--reverse`` is what yields the
-      newest-first order :meth:`load_history_strings` must return. Its
-      ``--help`` describes the opposite.
+    * ``atuin search --limit N`` picks the newest N entries and prints them
+      oldest-first. ``--reverse`` does not just flip that output: it flips the
+      query, so with ``--limit`` it picks the *oldest* N (verified against atuin
+      18.23). The newest-first order :meth:`load_history_strings` must return is
+      therefore made here, by reversing the output.
     * ``--include-duplicates`` is required, because frecency scores how often
       an entry appears.
     * ``history end`` is not called: it demands an exit code we do not have,
@@ -259,7 +261,6 @@ class AtuinHistory(FileHistoryWithTimestamp):
             '--author',
             self.author,
             '--include-duplicates',
-            '--reverse',
             '--print0',
             '--limit',
             str(self.limit),
@@ -269,7 +270,7 @@ class AtuinHistory(FileHistoryWithTimestamp):
         if out is None:
             return None
         # --print0 terminates every record, so the trailing split is empty.
-        return [record for record in out.split('\0') if record]
+        return [record for record in out.split('\0') if record][::-1]
 
     def load_history_strings(self) -> Iterable[str]:
         entries = self._search(None)
