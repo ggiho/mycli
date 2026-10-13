@@ -6,10 +6,14 @@ import sys
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
+from cli_helpers.utils import strip_ansi
 import click
 from configobj import ConfigObj
 import prompt_toolkit
 from prompt_toolkit.formatted_text import ANSI, FormattedText, to_plain_text
+from prompt_toolkit.utils import get_cwidth
+from pygments.style import Style as PygmentsStyle
+from pygments.token import Token
 import pytest
 
 from mycli import compat
@@ -606,6 +610,135 @@ def test_format_sqlresult_keeps_table_when_first_line_fits_width() -> None:
     result = SQLResult(header=['id'], rows=[(1,)])
 
     assert list(OutputMixin.format_sqlresult(cli, result, max_width=100)) == ['plain output']
+
+
+def test_format_as_grid_fills_columns_top_to_bottom_like_ls() -> None:
+    rows = [(name,) for name in ['alpha', 'b', 'charlie', 'd', 'echo']]
+
+    # Three columns of two rows need 5 + 2 + 7 + 2 + 4 = 20 cells plus 4 for the
+    # frame; anything narrower falls back to two columns of three rows.
+    assert output_module.format_as_grid('Database', rows, 24, '<null>') == [
+        '+----------------------+',
+        '| Database             |',
+        '+----------------------+',
+        '| alpha  charlie  echo |',
+        '| b      d             |',
+        '+----------------------+',
+    ]
+    assert output_module.format_as_grid('Database', rows, 23, '<null>') == [
+        '+---------------+',
+        '| Database      |',
+        '+---------------+',
+        '| alpha    d    |',
+        '| b        echo |',
+        '| charlie       |',
+        '+---------------+',
+    ]
+
+
+def test_format_as_grid_widens_the_frame_for_a_long_header() -> None:
+    assert output_module.format_as_grid('Tables_in_db', [('a',), ('b',)], 80, '<null>') == [
+        '+--------------+',
+        '| Tables_in_db |',
+        '+--------------+',
+        '| a  b         |',
+        '+--------------+',
+    ]
+
+
+def test_format_as_grid_uses_a_box_drawing_frame_for_unicode_formats() -> None:
+    assert output_module.format_as_grid('h', [('a',), ('b',)], 80, '<null>', unicode_frame=True) == [
+        '┌──────┐',
+        '│ h    │',
+        '├──────┤',
+        '│ a  b │',
+        '└──────┘',
+    ]
+
+
+def test_format_as_grid_styles_header_separators_and_nulls() -> None:
+    class GridStyle(PygmentsStyle):
+        styles = {Token.Output.Header: 'bold', Token.Output.TableSeparator: '#888888', Token.Output.Null: 'italic'}
+
+    lines = output_module.format_as_grid('h', [('a',), (None,)], 80, '<null>', style=GridStyle)
+
+    assert lines is not None
+    assert [strip_ansi(line) for line in lines] == ['+-----------+', '| h         |', '+-----------+', '| a  <null> |', '+-----------+']
+    assert all(line != strip_ansi(line) for line in lines)
+
+
+def test_format_as_grid_returns_none_when_two_columns_do_not_fit() -> None:
+    rows = [('x' * 10,), ('y' * 10,)]
+    assert output_module.format_as_grid('h', rows, 25, '<null>') is None
+    assert output_module.format_as_grid('h', rows, 26, '<null>') == [
+        '+------------------------+',
+        '| h                      |',
+        '+------------------------+',
+        '| xxxxxxxxxx  yyyyyyyyyy |',
+        '+------------------------+',
+    ]
+
+
+def test_format_as_grid_measures_wide_characters_and_shows_missing_values() -> None:
+    lines = output_module.format_as_grid('h', [('한글',), (None,), ('a',)], 80, '<null>')
+
+    assert lines is not None
+    assert lines[3] == '| 한글  <null>  a |'
+    assert len({get_cwidth(line) for line in lines}) == 1
+
+
+@pytest.mark.parametrize('rows', [[(b'x',), ('y',)], [('a\nb',), ('c',)], [('a\tb',), ('c',)], [('only',)]])
+def test_format_as_grid_returns_none_for_values_it_cannot_lay_out(rows: list) -> None:
+    assert output_module.format_as_grid('h', rows, 80, '<null>') is None
+
+
+def test_format_sqlresult_lays_out_single_column_as_grid_when_width_is_given() -> None:
+    cli = make_bare_mycli()
+    result = SQLResult(header=['Database'], rows=[('a',), ('b',), ('c',)])
+
+    assert [strip_ansi(line) for line in OutputMixin.format_sqlresult(cli, result, grid_width=80)] == [
+        '+----------+',
+        '| Database |',
+        '+----------+',
+        '| a  b  c  |',
+        '+----------+',
+    ]
+    assert cli.main_formatter.calls == []
+
+
+@pytest.mark.parametrize(
+    ('header', 'kwargs'),
+    [
+        (['Database'], {}),
+        (['Database'], {'grid_width': 80, 'is_expanded': True}),
+        (['Database'], {'grid_width': 80, 'is_redirected': True}),
+        (['id', 'name'], {'grid_width': 80}),
+    ],
+)
+def test_format_sqlresult_keeps_table_unless_single_column_on_screen(header: list[str], kwargs: dict[str, Any]) -> None:
+    cli = make_bare_mycli()
+    rows = [('a',) * len(header), ('b',) * len(header)]
+
+    formatted = list(OutputMixin.format_sqlresult(cli, SQLResult(header=header, rows=rows), **kwargs))
+
+    assert formatted in (['plain output'], ['vertical output'])
+
+
+def test_format_sqlresult_keeps_table_for_data_formats() -> None:
+    cli = make_bare_mycli()
+    cli.main_formatter = DummyFormatter(format_name='csv')
+    result = SQLResult(header=['Database'], rows=[('a',), ('b',)])
+
+    assert list(OutputMixin.format_sqlresult(cli, result, grid_width=80)) == ['plain output']
+
+
+def test_format_sqlresult_materializes_cursor_rows_for_grid(monkeypatch: pytest.MonkeyPatch) -> None:
+    cli = make_bare_mycli()
+    rows = FakeCursorBase(rows=[('a',), ('b',)], rowcount=2, description=[('Database', 253)])
+    monkeypatch.setattr(output_module, 'Cursor', FakeCursorBase)
+    result = SQLResult(header=['Database'], rows=cast(Any, rows))
+
+    assert strip_ansi(list(OutputMixin.format_sqlresult(cli, result, grid_width=80))[3]) == '| a  b     |'
 
 
 def test_get_reserved_space_caps_ratio(monkeypatch: pytest.MonkeyPatch) -> None:

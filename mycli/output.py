@@ -12,7 +12,7 @@ from typing import Generator, Literal, Protocol
 
 from cli_helpers.tabular_output import TabularOutputFormatter, preprocessors
 from cli_helpers.tabular_output.output_formatter import MISSING_VALUE as DEFAULT_MISSING_VALUE
-from cli_helpers.utils import strip_ansi
+from cli_helpers.utils import filter_style_table, strip_ansi, style_field
 import click
 from configobj import ConfigObj
 import prompt_toolkit
@@ -26,7 +26,9 @@ from prompt_toolkit.formatted_text import (
 )
 from prompt_toolkit.shortcuts import PromptSession
 from prompt_toolkit.styles.style import _MergedStyle
+from prompt_toolkit.utils import get_cwidth
 from pygments.style import Style as PygmentsStyle
+from pygments.token import Token
 from pymysql.cursors import Cursor
 
 from mycli.compat import WIN, is_windows_console
@@ -36,6 +38,119 @@ from mycli.packages import special
 from mycli.packages.sqlresult import SQLResult
 from mycli.packages.tabular_output import sql_format
 from mycli.sqlexecute import FIELD_TYPES
+
+# Table formats whose single-column results may be laid out as an ls-style grid.
+# Data formats (csv, tsv, jsonl, sql-insert, ...) keep one value per line.
+GRID_FORMATS = frozenset({
+    'ascii',
+    'ascii_escaped',
+    'plain',
+    'simple',
+    'minimal',
+    'grid',
+    'fancy_grid',
+    'pipe',
+    'orgtbl',
+    'psql',
+    'psql_unicode',
+    'rst',
+    'github',
+    'double',
+    'mysql',
+    'mysql_unicode',
+    'mysql_heavy',
+})
+# Single-column results in these formats get a box-drawing frame; the rest use ASCII.
+UNICODE_GRID_FORMATS = frozenset({'psql_unicode', 'fancy_grid', 'double', 'mysql_unicode', 'mysql_heavy'})
+GRID_GAP = 2
+# top-left, top-right, middle-left, middle-right, bottom-left, bottom-right, horizontal, vertical
+ASCII_FRAME = ('+', '+', '+', '+', '+', '+', '-', '|')
+UNICODE_FRAME = ('┌', '┐', '├', '┤', '└', '┘', '─', '│')
+
+
+def _style_text(token, text: str, style) -> str:
+    """Style *text* like cli_helpers styles table cells, leaving it plain if the style does not set *token*."""
+    if style and filter_style_table(style, token).get(token):
+        return style_field(token, text, style)
+    return text
+
+
+def format_as_grid(
+    header: str,
+    rows: list,
+    width: int,
+    missing_value: str,
+    style=None,
+    unicode_frame: bool = False,
+) -> list[str] | None:
+    """Lay out one column's values column-major, like `ls -C`, in a framed box under the header.
+
+    Returns None when the values cannot be shown as plain text on one line each
+    (bytes, newlines, tabs) or when fewer than two columns fit in `width`.
+    """
+    values = []
+    nulls = set()
+    for i, (value,) in enumerate(rows):
+        if value is None:
+            value = missing_value
+            nulls.add(i)
+        elif isinstance(value, (bytes, bytearray)):
+            return None
+        else:
+            value = str(value)
+            if '\n' in value or '\t' in value:
+                return None
+        values.append(value)
+    if len(values) < 2:
+        return None
+
+    # The frame takes '| ' on the left and ' |' on the right.
+    inner_width = width - 4
+    widths = [get_cwidth(v) for v in values]
+    header_width = get_cwidth(header)
+    if header_width > inner_width:
+        return None
+    # Every column is at least min(widths) wide, which bounds how many can fit.
+    max_cols = min(len(values), (inner_width + GRID_GAP) // (min(widths) + GRID_GAP))
+    for ncols in range(max_cols, 1, -1):
+        nrows = -(-len(values) // ncols)
+        ncols = -(-len(values) // nrows)  # drop columns that would be empty
+        col_widths = [max(widths[c * nrows : (c + 1) * nrows]) for c in range(ncols)]
+        grid_width = sum(col_widths) + GRID_GAP * (ncols - 1)
+        if grid_width <= inner_width:
+            break
+    else:
+        return None
+
+    top_left, top_right, mid_left, mid_right, bottom_left, bottom_right, horizontal, vertical = (
+        UNICODE_FRAME if unicode_frame else ASCII_FRAME
+    )
+    content_width = max(grid_width, header_width)
+    rule = horizontal * (content_width + 2)
+    side = _style_text(Token.Output.TableSeparator, vertical, style)
+
+    def framed(text: str, text_width: int) -> str:
+        return f'{side} {text}{" " * (content_width - text_width)} {side}'
+
+    lines = [
+        _style_text(Token.Output.TableSeparator, top_left + rule + top_right, style),
+        framed(_style_text(Token.Output.Header, header, style), header_width),
+        _style_text(Token.Output.TableSeparator, mid_left + rule + mid_right, style),
+    ]
+    for r in range(nrows):
+        cells = []
+        line_width = 0
+        for c in range(ncols):
+            i = c * nrows + r
+            if i >= len(values):
+                break
+            cell = _style_text(Token.Output.Null, values[i], style) if i in nulls else values[i]
+            pad = col_widths[c] - widths[i] + GRID_GAP if c < ncols - 1 else 0
+            cells.append(cell + ' ' * pad)
+            line_width += widths[i] + pad
+        lines.append(framed(''.join(cells), line_width))
+    lines.append(_style_text(Token.Output.TableSeparator, bottom_left + rule + bottom_right, style))
+    return lines
 
 
 class MyCliState(Protocol):
@@ -244,6 +359,7 @@ class OutputMixin(MyCliState):
         binary_display: str | None = None,
         max_width: int | None = None,
         is_warnings_style: bool = False,
+        grid_width: int | None = None,
     ) -> itertools.chain[str]:
         if is_redirected:
             use_formatter = self.redirect_formatter
@@ -287,19 +403,44 @@ class OutputMixin(MyCliState):
                 else:
                     column_types, colalign = [], []
 
-            if max_width is not None and isinstance(result.rows, Cursor):
+            use_grid = (
+                grid_width is not None
+                and not is_expanded
+                and use_formatter is self.main_formatter
+                and use_formatter.format_name in GRID_FORMATS
+                and result.header is not None
+                and len(result.header) == 1
+            )
+
+            if (max_width is not None or use_grid) and isinstance(result.rows, Cursor):
                 result_rows = list(result.rows)
             else:
                 result_rows = result.rows
 
-            formatted = use_formatter.format_output(
-                result_rows,
-                result.header or [],
-                format_name="vertical" if is_expanded else None,
-                column_types=column_types,
-                colalign=colalign,
-                **output_kwargs,
-            )
+            grid = None
+            if use_grid:
+                assert grid_width is not None
+                missing_value = output_kwargs.get('missing_value', default_kwargs.get('missing_value', DEFAULT_MISSING_VALUE))
+                grid = format_as_grid(
+                    str(result.header[0]),
+                    list(result_rows or []),
+                    grid_width,
+                    missing_value,
+                    style=output_kwargs['style'],
+                    unicode_frame=use_formatter.format_name in UNICODE_GRID_FORMATS,
+                )
+
+            if grid is None:
+                formatted = use_formatter.format_output(
+                    result_rows,
+                    result.header or [],
+                    format_name="vertical" if is_expanded else None,
+                    column_types=column_types,
+                    colalign=colalign,
+                    **output_kwargs,
+                )
+            else:
+                formatted = grid
 
             if isinstance(formatted, str):
                 formatted = formatted.splitlines()

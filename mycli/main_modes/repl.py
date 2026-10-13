@@ -547,13 +547,11 @@ def _output_results(
 
         capture_last_result(result, mycli.logger)
 
-        if mycli.auto_vertical_output:
-            if mycli.prompt_session is not None:
-                max_width = mycli.prompt_session.output.get_size().columns
-            else:
-                max_width = DEFAULT_WIDTH
+        if mycli.prompt_session is not None:
+            terminal_width = mycli.prompt_session.output.get_size().columns
         else:
-            max_width = None
+            terminal_width = DEFAULT_WIDTH
+        max_width = terminal_width if mycli.auto_vertical_output else None
 
         formatted = mycli.format_sqlresult(
             result,
@@ -563,6 +561,7 @@ def _output_results(
             numeric_alignment=mycli.numeric_alignment,
             binary_display=mycli.binary_display,
             max_width=max_width,
+            grid_width=None if special.is_redirected() else terminal_width,
         )
 
         duration = time.time() - start
@@ -646,13 +645,11 @@ def _single_paged_output_results(
                 else:
                     watch_count += 1
 
-            if mycli.auto_vertical_output:
-                if mycli.prompt_session is not None:
-                    max_width = mycli.prompt_session.output.get_size().columns
-                else:
-                    max_width = DEFAULT_WIDTH
+            if mycli.prompt_session is not None:
+                terminal_width = mycli.prompt_session.output.get_size().columns
             else:
-                max_width = None
+                terminal_width = DEFAULT_WIDTH
+            max_width = terminal_width if mycli.auto_vertical_output else None
 
             formatted = mycli.format_sqlresult(
                 result,
@@ -662,6 +659,7 @@ def _single_paged_output_results(
                 numeric_alignment=mycli.numeric_alignment,
                 binary_display=mycli.binary_display,
                 max_width=max_width,
+                grid_width=None if special.is_redirected() else terminal_width,
             )
             duration = time.time() - start
 
