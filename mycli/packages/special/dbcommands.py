@@ -89,10 +89,7 @@ def _escape_string_literal(value: str) -> str:
 
 
 # account_locked/password_expired only exist on MySQL 5.7.6+; fall back for older servers.
-_USER_LIST_QUERY = (
-    "SELECT user, host, plugin, account_locked AS locked, password_expired AS pw_expired, "
-    "max_user_connections AS max_conn FROM mysql.user ORDER BY user, host"
-)
+_USER_LIST_QUERY = "SELECT user, host, plugin, account_locked AS locked, password_expired AS pw_expired FROM mysql.user ORDER BY user, host"
 _USER_LIST_QUERY_LEGACY = "SELECT user, host, plugin FROM mysql.user ORDER BY user, host"
 
 
