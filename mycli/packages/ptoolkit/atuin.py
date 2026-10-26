@@ -13,6 +13,9 @@ filter mode match the shell:
   ``--filter-mode session``, so :func:`session_id` gives every mycli entry one
   deterministic session to scope on. Without it the picker would offer shell
   commands, which ``enter_accept`` would then run as SQL.
+* With ``--shell-up-key-binding`` a ``filter_mode_shell_up_key_binding`` in
+  the user's config wins over ``--filter-mode``, so it is pinned to
+  ``session`` through the environment (verified against atuin 18.24).
 """
 
 import hashlib
@@ -43,7 +46,7 @@ def session_id(author: str) -> str:
 def search_history(event: KeyPressEvent, author: str, up_key_binding: bool = False) -> bool:
     """Let atuin pick a history entry and put it in the buffer.
 
-    Returns False if atuin could not be run, so the caller can fall back.
+    Returns False if atuin could not be run or failed, so the caller can fall back.
     """
     buffer = event.current_buffer
 
@@ -58,6 +61,7 @@ def search_history(event: KeyPressEvent, author: str, up_key_binding: bool = Fal
         ATUIN_SHELL="zsh",
         ATUIN_QUERY=buffer.text,
         ATUIN_SESSION=session_id(author),
+        ATUIN_FILTER_MODE_SHELL_UP_KEY_BINDING="session",
     )
 
     try:
@@ -71,6 +75,11 @@ def search_history(event: KeyPressEvent, author: str, up_key_binding: bool = Fal
     # Redraw: atuin left the alternate screen and prompt_toolkit does not know.
     event.app.renderer.reset()
     event.app.invalidate()
+
+    if proc.returncode != 0:
+        # stderr is an error message here, not a pick.
+        logger.debug("atuin search exited %s: %s", proc.returncode, proc.stderr.strip())
+        return False
 
     pick = proc.stderr.strip()
     if not pick:

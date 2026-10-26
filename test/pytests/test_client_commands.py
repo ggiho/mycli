@@ -1195,3 +1195,31 @@ def test_rehash_registers_a_favorite_saved_after_startup() -> None:
     client.rehash()
 
     assert special.is_special_command('\\brandnew')
+
+
+def test_favorite_never_shadows_a_command_that_differs_only_in_case() -> None:
+    """`\\q` is case-insensitive, so a `\\Q` favorite would win over quitting."""
+    use_favorites(Q='SELECT 1', DT='SELECT 2')
+    client = DummyClient()
+
+    client.register_favorite_commands()
+
+    assert '\\Q' not in special_main.COMMANDS
+    assert '\\DT' not in special_main.COMMANDS
+
+
+def test_rerunning_registration_follows_saves_and_deletes() -> None:
+    use_favorites(ps='SELECT 1', gone='SELECT 2')
+    client = DummyClient()
+    client.register_favorite_commands()
+    assert special.is_special_command('\\gone')
+
+    # What `\fs fresh ...` and `\fd gone` leave behind.
+    use_favorites(ps='SELECT 1', fresh='SELECT 3')
+    client.register_favorite_commands()
+
+    assert special.is_special_command('\\fresh')
+    assert special.is_special_command('\\ps')
+    assert not special.is_special_command('\\gone')
+    assert not special.is_special_command('/gone')
+    assert '\\gone' not in special_main.COMMANDS

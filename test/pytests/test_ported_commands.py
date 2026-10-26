@@ -66,86 +66,152 @@ def test_fq_toggles_and_reports_the_new_state():
     assert iocommands.is_show_favorite_query() is False
 
 
-class FakeResult:
-    def __init__(self, header, rows):
+class FakeExplainCursor:
+    def __init__(self, conn):
+        self.conn = conn
+        self.description = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql):
+        self.conn.executed.append(sql)
+        if self.conn.error:
+            raise self.conn.error
+        self.description = [(name,) for name in self.conn.header]
+
+    def fetchall(self):
+        return self.conn.rows
+
+
+class FakeExplainConnection:
+    def __init__(self, header, rows, error=None):
         self.header = header
         self.rows = rows
+        self.error = error
+        self.executed: list[str] = []
+
+    def cursor(self):
+        return FakeExplainCursor(self)
 
 
 class FakeExec:
-    def __init__(self, results):
-        self.results = results
-        self.ran = None
+    def __init__(self, conn):
+        self.conn = conn
 
     def run(self, sql):
-        self.ran = sql
-        return self.results
+        raise AssertionError('F5 must not go through SQLExecute.run()')
 
 
 class FakeMycli:
-    def __init__(self, results):
-        self.sqlexecute = FakeExec(results)
-        self.logger = __import__('logging').getLogger('test')
+    def __init__(self, header=('id', 'type'), rows=((1, 'ALL'),), error=None):
+        self.sqlexecute = FakeExec(FakeExplainConnection(list(header), list(rows), error))
 
 
-class FakeApp:
-    def __init__(self):
-        self.invalidated = False
+def _explain(sql, cursor_position=None, **kwargs):
+    from mycli.key_bindings import _run_explain, explainable_statement
 
-    def invalidate(self):
-        self.invalidated = True
-
-
-def _explain(sql, results=None, capsys=None):
-    from mycli.key_bindings import _run_explain
-
-    mycli = FakeMycli(results if results is not None else [FakeResult(['id', 'type'], [(1, 'ALL')])])
-    app = FakeApp()
-    _run_explain(mycli, sql, app)
-    return mycli, app
+    mycli = FakeMycli(**kwargs)
+    statement = explainable_statement(sql, len(sql) if cursor_position is None else cursor_position)
+    if statement is not None:
+        _run_explain(mycli, statement)
+    return mycli.sqlexecute.conn.executed
 
 
 def test_f5_explain_prefixes_the_query_and_prints_a_table(capsys):
-    mycli, app = _explain('SELECT * FROM t')
-    assert mycli.sqlexecute.ran == 'EXPLAIN SELECT * FROM t'
+    assert _explain('SELECT * FROM t') == ['EXPLAIN SELECT * FROM t']
     out = capsys.readouterr().out
     assert 'EXPLAIN Preview (F5)' in out
     assert 'id' in out and 'ALL' in out
-    assert app.invalidated is True
+
+
+@pytest.mark.parametrize(
+    ('cursor_position', 'expected'),
+    [(0, 'EXPLAIN SELECT 1'), (9, 'EXPLAIN SELECT 1'), (12, 'EXPLAIN DELETE FROM t'), (None, 'EXPLAIN DELETE FROM t')],
+)
+def test_f5_explains_only_the_statement_under_the_cursor(cursor_position, expected):
+    """`SELECT 1; DELETE FROM t` must never execute the DELETE itself."""
+    assert _explain('SELECT 1; DELETE FROM t', cursor_position) == [expected]
 
 
 @pytest.mark.parametrize(
     'sql',
-    ['EXPLAIN SELECT 1', 'show tables', 'use mydb', 'desc t', 'set x=1', '\\dt', '/dt', '   '],
+    [
+        'EXPLAIN SELECT 1',
+        'EXPLAIN ANALYZE SELECT 1',
+        'show tables',
+        'use mydb',
+        'desc t',
+        'set x=1',
+        'DROP TABLE t',
+        '\\dt',
+        '/dt',
+        '\\fs q SELECT 1',
+        '   ',
+    ],
 )
 def test_f5_explain_skips_statements_it_cannot_explain(sql):
-    mycli, _ = _explain(sql)
-    assert mycli.sqlexecute.ran is None
+    assert _explain(sql) == []
+
+
+def test_f5_explain_drops_comments_that_could_hide_a_second_statement():
+    assert _explain('SELECT 1 /*!; DELETE FROM t */ -- x') == ['EXPLAIN SELECT 1']
+
+
+def test_f5_explain_accepts_ctes_and_strips_terminators():
+    assert _explain('WITH a AS (SELECT 1) SELECT * FROM a\\G') == ['EXPLAIN WITH a AS (SELECT 1) SELECT * FROM a']
+
+
+def test_f5_explain_refuses_a_custom_delimiter_statement_holding_a_semicolon(monkeypatch):
+    monkeypatch.setattr(iocommands.delimiter_command, '_delimiter', '$$')
+    assert _explain('SELECT 1; DELETE FROM t$$') == []
 
 
 def test_f5_explain_renders_nulls_and_survives_errors(capsys):
-    _explain('SELECT 1', results=[FakeResult(['a'], [(None,)])])
+    _explain('SELECT 1', header=['a'], rows=[(None,)])
     assert 'NULL' in capsys.readouterr().out
 
-    class Boom(FakeExec):
-        def run(self, sql):
-            raise RuntimeError('boom')
-
-    from mycli.key_bindings import _run_explain
-
-    mycli = FakeMycli([])
-    mycli.sqlexecute = Boom([])
-    _run_explain(mycli, 'SELECT 1', FakeApp())  # must not raise
+    assert _explain('SELECT 1', error=RuntimeError('boom')) == ['EXPLAIN SELECT 1']  # must not raise
 
 
-class FakeCursor:
-    """Minimal Cursor stand-in; capture_last_result checks isinstance(Cursor)."""
+def test_f5_binding_runs_the_preview_in_the_terminal_not_on_a_thread(monkeypatch):
+    from types import SimpleNamespace
 
-    def __init__(self, rows):
-        self._rows = rows
+    from prompt_toolkit.document import Document
 
-    def __iter__(self):
-        return iter(self._rows)
+    from mycli import key_bindings
+
+    scheduled = []
+    monkeypatch.setattr(key_bindings, 'run_in_terminal', scheduled.append)
+    mycli = FakeMycli()
+    stub = SimpleNamespace(config={}, sqlexecute=mycli.sqlexecute)
+    binding = next(b for b in key_bindings.mycli_bindings(stub).bindings if [str(k) for k in b.keys] == ['Keys.F5'])
+    buffer = SimpleNamespace(document=Document('SELECT 1; DELETE FROM t', 3))
+    buffer.text, buffer.cursor_position = buffer.document.text, buffer.document.cursor_position
+
+    binding.handler(SimpleNamespace(app=SimpleNamespace(current_buffer=buffer)))
+
+    assert len(scheduled) == 1
+    assert mycli.sqlexecute.conn.executed == []  # nothing ran until the terminal is free
+    scheduled[0]()
+    assert mycli.sqlexecute.conn.executed == ['EXPLAIN SELECT 1']
+
+
+def make_cursor(rows, description=(('a', 3, None, None, None, None, None),), warning_count=0, cursor_class=None):
+    """A real pymysql cursor holding a fetched result, without a server."""
+    from pymysql.cursors import Cursor
+
+    cursor = (cursor_class or Cursor)(None)
+    cursor._executed = 'SELECT'
+    cursor._rows = tuple(rows)
+    cursor.rownumber = 0
+    cursor.rowcount = len(rows)
+    cursor.description = description
+    cursor.warning_count = warning_count
+    return cursor
 
 
 def test_capture_stores_result_sets_despite_the_status_wording():
@@ -153,19 +219,58 @@ def test_capture_stores_result_sets_despite_the_status_wording():
 
     Keying the capture off is_select() silently stored nothing; this pins it.
     """
-    from unittest.mock import patch
-
+    from mycli.main_modes.repl import capture_last_result
     from mycli.packages.sqlresult import SQLResult
 
-    with patch('mycli.main_modes.repl.Cursor', FakeCursor):
-        from mycli.main_modes.repl import capture_last_result
-
-        result = SQLResult(header=['a'], rows=FakeCursor([(1,), (2,)]), status='2 rows in set')
-        capture_last_result(result, __import__('logging').getLogger('test'))
+    cursor = make_cursor([(1,), (2,)], warning_count=1)
+    result = SQLResult(header=['a'], rows=cursor, status='2 rows in set')
+    capture_last_result(result, __import__('logging').getLogger('test'))
 
     assert get_last_result() == (['a'], [(1,), (2,)])
-    # The cursor was drained, so the formatter must get the list.
-    assert result.rows == [(1,), (2,)]
+    # The formatter and the warnings check still get the cursor, rewound.
+    assert result.rows is cursor
+    assert cursor.warning_count == 1
+    assert list(cursor) == [(1,), (2,)]
+
+
+def test_numeric_column_stays_right_aligned_after_capture():
+    from mycli.main_modes.repl import capture_last_result
+    from mycli.output import OutputMixin
+    from mycli.packages.sqlresult import SQLResult
+    from test.utils import make_bare_mycli
+
+    description = (('id', 3, None, None, None, None, None), ('name', 253, None, None, None, None, None))
+    result = SQLResult(header=['id', 'name'], rows=make_cursor([(1, 'x'), (22, 'y')], description), status='2 rows in set')
+    capture_last_result(result, __import__('logging').getLogger('test'))
+
+    cli = make_bare_mycli()
+    list(OutputMixin.format_sqlresult(cli, result, numeric_alignment='right'))
+
+    (rows, _header, _format_name), kwargs = cli.main_formatter.calls[-1]
+    assert kwargs['colalign'] == ['right', 'left']
+    assert list(rows) == [(1, 'x'), (22, 'y')]
+
+
+def test_capture_skips_unbuffered_cursors():
+    """An SSCursor cannot rewind, and copying it would defeat --unbuffered."""
+    from pymysql.cursors import SSCursor
+
+    from mycli.main_modes.repl import capture_last_result
+    from mycli.packages.sqlresult import SQLResult
+
+    cursor = make_cursor([(1,)], cursor_class=SSCursor)
+    capture_last_result(SQLResult(header=['a'], rows=cursor), __import__('logging').getLogger('test'))
+
+    assert get_last_result() == (None, None)
+
+
+def test_capture_of_an_empty_result_set():
+    from mycli.main_modes.repl import capture_last_result
+    from mycli.packages.sqlresult import SQLResult
+
+    capture_last_result(SQLResult(header=['a'], rows=make_cursor([])), __import__('logging').getLogger('test'))
+
+    assert get_last_result() == (['a'], [])
 
 
 def test_capture_ignores_results_without_a_row_set():

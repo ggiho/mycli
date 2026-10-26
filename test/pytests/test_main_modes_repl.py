@@ -2259,3 +2259,127 @@ def test_output_results_covers_remaining_watch_select_and_warning_branches(monke
         start=0.0,
     )
     assert cli.output_calls
+
+
+def make_fetched_cursor(rows: list[tuple[Any, ...]], warning_count: int = 0) -> pymysql.cursors.Cursor:
+    """A real buffered cursor holding a fetched result, without a server."""
+    cursor = pymysql.cursors.Cursor(cast(Any, None))
+    cursor._executed = 'SELECT'
+    cursor._rows = tuple(rows)
+    cursor.rownumber = 0
+    cursor.rowcount = len(rows)
+    cursor.description = (('id', 3, None, None, None, None, None),)
+    cursor.warning_count = warning_count
+    return cursor
+
+
+class WarningsSQLExecute:
+    def __init__(self) -> None:
+        self.ran: list[str] = []
+
+    def run(self, text: str) -> list[SQLResult]:
+        self.ran.append(text)
+        return [SQLResult(status='warning')]
+
+
+@pytest.fixture
+def restore_last_result() -> Generator[None, None, None]:
+    saved = repl_mode.special.get_last_result()
+    repl_mode.special.store_last_result(None, None)
+    yield
+    repl_mode.special.store_last_result(*saved)
+
+
+@pytest.mark.usefixtures('restore_last_result')
+def test_output_results_captures_last_and_keeps_cursor_for_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    sqlexecute = WarningsSQLExecute()
+    cli = make_repl_cli(sqlexecute)
+    formatted_rows: list[Any] = []
+
+    def format_sqlresult(result: SQLResult, **kwargs: Any) -> Iterator[str]:
+        formatted_rows.append(result.rows)
+        return iter(['row'])
+
+    cli.format_sqlresult = format_sqlresult
+    monkeypatch.setattr(repl_mode.special, 'is_show_warnings_enabled', lambda: True)
+    monkeypatch.setattr(repl_mode.special, 'is_timing_enabled', lambda: False)
+    monkeypatch.setattr(repl_mode.special, 'is_redirected', lambda: False)
+    cursor = make_fetched_cursor([(1,), (2,)], warning_count=1)
+
+    repl_mode._output_results(cli, repl_mode.ReplState(), iter([SQLResult(header=['id'], rows=cursor, status='2 rows in set')]), 0.0)
+
+    assert repl_mode.special.get_last_result() == (['id'], [(1,), (2,)])
+    assert formatted_rows[0] is cursor
+    assert list(cursor) == [(1,), (2,)]
+    assert sqlexecute.ran == ['SHOW WARNINGS']
+
+
+@pytest.mark.usefixtures('restore_last_result')
+def test_single_paged_output_captures_last_and_keeps_cursor_for_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    sqlexecute = WarningsSQLExecute()
+    cli = make_repl_cli(sqlexecute)
+    patch_single_paged_output_runtime(monkeypatch)
+    monkeypatch.setattr(repl_mode.special, 'is_show_warnings_enabled', lambda: True)
+    monkeypatch.setattr(repl_mode.time, 'time', lambda: 0.0)
+    cursor = make_fetched_cursor([(3,)], warning_count=1)
+
+    list(
+        repl_mode._single_paged_output_results(
+            cli,
+            repl_mode.ReplState(),
+            iter([SQLResult(header=['id'], rows=cursor, status='1 row in set')]),
+            start=0.0,
+        )
+    )
+
+    assert repl_mode.special.get_last_result() == (['id'], [(3,)])
+    assert sqlexecute.ran == ['SHOW WARNINGS']
+
+
+def test_main_repl_ends_each_atuin_entry_with_the_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mycli.packages.ptoolkit.history import AtuinHistory
+    from mycli.types import Query
+
+    class RecordingAtuinHistory(AtuinHistory):
+        def __init__(self) -> None:
+            self.finished: list[int] = []
+
+        def finish(self, exit_code: int) -> None:
+            self.finished.append(exit_code)
+
+    history = RecordingAtuinHistory()
+    cli = make_repl_cli(SimpleNamespace())
+    cli.completer = SimpleNamespace(frecency_provider=None)
+    monkeypatch.setattr(repl_mode, '_create_history', lambda mycli: history)
+    monkeypatch.setattr(repl_mode, 'mycli_bindings', lambda mycli: 'bindings')
+    monkeypatch.setattr(repl_mode, '_show_startup_banner', lambda mycli, sqlexecute: None)
+    monkeypatch.setattr(repl_mode, '_build_prompt_session', lambda mycli, state, history, key_bindings: None)
+    monkeypatch.setattr(repl_mode.special, 'close_tee', lambda: None)
+    monkeypatch.setattr(repl_mode, 'set_all_external_titles', lambda mycli: None)
+    outcomes: list[bool | None] = [True, False, None]
+
+    def fake_one_iteration(mycli: Any, state: repl_mode.ReplState) -> None:
+        if not outcomes:
+            raise EOFError()  # \q
+        successful = outcomes.pop(0)
+        if successful is not None:  # None: declined, so no query ran
+            mycli.query_history.append(Query('select 1', successful, False))
+
+    monkeypatch.setattr(repl_mode, '_one_iteration', fake_one_iteration)
+
+    repl_mode.main_repl(cli)
+
+    assert history.finished == [0, 1, 1, 0]
+
+
+def test_one_iteration_reregisters_favorite_commands_after_save_and_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_repl_runtime_defaults(monkeypatch)
+    sqlexecute = SimpleNamespace(dbname='db', connection_id=0, run=lambda text: iter([SQLResult(status='Saved.')]))
+    cli = make_repl_cli(sqlexecute)
+    registrations: list[bool] = []
+    cli.register_favorite_commands = lambda: registrations.append(True)
+
+    for text in ('\\fs q SELECT 1', '\\fd q', 'select 1'):
+        repl_mode._one_iteration(cli, repl_mode.ReplState(), text)
+
+    assert registrations == [True, True]

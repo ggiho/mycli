@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 
 from prompt_toolkit.history import FileHistory
 from sqlglot import Token, TokenType, tokenize
@@ -219,18 +220,24 @@ class AtuinHistory(FileHistoryWithTimestamp):
     ones. Queries predating the switch stay reachable without being imported,
     and nothing new is written to the file.
 
-    Behaviour of the atuin CLI this relies on (verified against atuin 18.19):
+    Behaviour of the atuin CLI this relies on (verified against atuin 18.24):
 
     * ``atuin search --limit N`` picks the newest N entries and prints them
       oldest-first. ``--reverse`` does not just flip that output: it flips the
-      query, so with ``--limit`` it picks the *oldest* N (verified against atuin
-      18.23). The newest-first order :meth:`load_history_strings` must return is
-      therefore made here, by reversing the output.
+      query, so with ``--limit`` it picks the *oldest* N. The newest-first order
+      :meth:`load_history_strings` must return is therefore made here, by
+      reversing the output.
     * ``--include-duplicates`` is required, because frecency scores how often
       an entry appears.
-    * ``history end`` is not called: it demands an exit code we do not have,
-      since the line is stored on accept, before the query runs. atuin leaves
-      such entries at ``exit=-1``, which is the honest value.
+    * ``--filter-mode global`` is required, or the user's ``filter_mode``
+      (``session``, ``directory``, ...) applies and the search finds nothing;
+      ``--author`` does the scoping.
+    * ``history start`` takes the SQL after ``--``, or SQL starting with ``-``
+      (a leading ``-- comment``) is rejected as an unknown option. It prints the
+      new entry's id.
+    * An entry only reaches the record store (``records = true``, and so sync)
+      once ``history end`` runs. The line is stored on accept, before the query
+      runs, so :meth:`finish` ends it once the REPL knows the outcome.
     """
 
     #: atuin is a local sqlite read; this only guards against a wedged process.
@@ -241,6 +248,8 @@ class AtuinHistory(FileHistoryWithTimestamp):
     def __init__(self, filename: _StrOrBytesPath, author: str = "mycli", limit: int = 5000, **kwargs) -> None:
         self.author = author
         self.limit = limit
+        #: (atuin history id, start in ns) of the entry awaiting `history end`.
+        self._pending: tuple[str, int] | None = None
         super().__init__(filename, **kwargs)
 
     def _atuin(self, *args: str, env: Mapping[str, str] | None = None) -> str | None:
@@ -260,6 +269,8 @@ class AtuinHistory(FileHistoryWithTimestamp):
             'search',
             '--author',
             self.author,
+            '--filter-mode',
+            'global',
             '--include-duplicates',
             '--print0',
             '--limit',
@@ -284,13 +295,35 @@ class AtuinHistory(FileHistoryWithTimestamp):
     def store_string(self, string: str) -> None:
         # append_string() has already dropped password changes and updated the
         # frecency counters; only the storage backend differs here.
-        self._atuin(
+        # A second prompt in one REPL iteration (\e, \llm) supersedes the first.
+        self.finish(0)
+        history_id = self._atuin(
             'history',
             'start',
             '--author',
             self.author,
+            '--',
             string,
             env=dict(os.environ, ATUIN_SESSION=atuin.session_id(self.author)),
+        )
+        if history_id and history_id.strip():
+            self._pending = (history_id.strip(), time.monotonic_ns())
+
+    def finish(self, exit_code: int) -> None:
+        """End the entry the last prompt stored, with the query's outcome."""
+        if self._pending is None:
+            return
+        history_id, started = self._pending
+        self._pending = None
+        self._atuin(
+            'history',
+            'end',
+            '--exit',
+            str(exit_code),
+            '--duration',
+            str(time.monotonic_ns() - started),
+            '--',
+            history_id,
         )
 
     def load_history_with_timestamp(self) -> list[tuple[str, str]]:

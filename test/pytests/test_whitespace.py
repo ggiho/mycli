@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mycli.packages.whitespace import strip_invisible, strip_invisible_outside_literals
+from mycli.packages.whitespace import strip_invisible_outside_literals
 
 NBSP = '\u00a0'
 
@@ -18,8 +18,8 @@ NBSP = '\u00a0'
         ('plain text', 'plain text'),
     ],
 )
-def test_strip_invisible(text: str, expected: str) -> None:
-    assert strip_invisible(text) == expected
+def test_invisible_characters_are_replaced(text: str, expected: str) -> None:
+    assert strip_invisible_outside_literals(text) == expected
 
 
 def test_literals_are_left_untouched() -> None:
@@ -51,3 +51,38 @@ def test_structure_outside_a_literal_is_still_normalized() -> None:
     sql = f"SELECT{NBSP}'kept{NBSP}as is'{NBSP}FROM{NBSP}t;"
 
     assert strip_invisible_outside_literals(sql) == f"SELECT 'kept{NBSP}as is' FROM t;"
+
+
+@pytest.mark.parametrize(
+    'comment',
+    ["-- don't", "# don't", "/* don't */", '-- say "hi', '/* `x */', "--\tdon't"],
+)
+def test_a_quote_inside_a_comment_does_not_protect_the_code_after_it(comment: str) -> None:
+    sql = f'SELECT 1 {comment}\nFROM{NBSP}t'
+
+    assert strip_invisible_outside_literals(sql) == f'SELECT 1 {comment}\nFROM t'
+
+
+def test_comments_are_cleaned_and_literals_after_them_still_protected() -> None:
+    sql = f"SELECT 1 -- it's{NBSP}here\n, 'a{NBSP}b'{NBSP}/* don't{NBSP}*/ FROM t"
+
+    assert strip_invisible_outside_literals(sql) == f"SELECT 1 -- it's here\n, 'a{NBSP}b' /* don't */ FROM t"
+
+
+def test_a_line_separator_ends_a_line_comment() -> None:
+    """It becomes a newline, so what follows is code again, literals included."""
+    sql = f"-- don't\u2028SELECT 'a{NBSP}b'"
+
+    assert strip_invisible_outside_literals(sql) == f"-- don't\nSELECT 'a{NBSP}b'"
+
+
+@pytest.mark.parametrize(
+    'sql',
+    [
+        f"SELECT 1--'a{NBSP}b'",  # `--` without a space is arithmetic, not a comment
+        f"SELECT /*! 'a{NBSP}b' */ 1",  # executed by MySQL
+        f"SELECT /*+ SET_VAR(x='a{NBSP}b') */ 1",  # optimizer hint
+    ],
+)
+def test_code_that_only_looks_like_a_comment_keeps_its_literals(sql: str) -> None:
+    assert NBSP in strip_invisible_outside_literals(sql)

@@ -437,9 +437,9 @@ def need_completion_refresh(queries: str) -> bool:
                 "use",
                 "/use",
                 "\\r",
-                "\\u",
+                "\\c",
                 "/r",
-                "/u",
+                "/c",
                 "connect",
                 "/connect",
                 "drop",
@@ -452,7 +452,7 @@ def need_completion_refresh(queries: str) -> bool:
 
 
 def need_completion_reset(queries: str) -> bool:
-    """Determines if the statement is a database switch such as 'use' or '\\u'.
+    """Determines if the statement is a database switch such as 'use' or '\\c'.
     When a database is changed the existing completions must be reset before we
     start the completion refresh for the new database.
     """
@@ -460,12 +460,26 @@ def need_completion_reset(queries: str) -> bool:
         try:
             tokens = query.split()
             first_token = tokens[0]
-            if first_token.lower() in ("use", "/use", "\\u", "/u"):
+            if first_token.lower() in ("use", "/use", "\\c", "/c"):
                 return True
             if first_token.lower() in ("\\r", "/r", "connect", "/connect") and len(tokens) > 1:
                 return True
         except Exception:
             continue
+    return False
+
+
+def need_favorite_commands_refresh(queries: str) -> bool:
+    """Determines if the statement saves or deletes a favorite query, after
+    which the command each favorite gets of its own name must be redone."""
+    for query in sqlparse.split(queries):
+        tokens = query.lower().split()
+        if not tokens:
+            continue
+        if tokens[0] in ("\\fs", "/fs", "\\fd", "/fd"):
+            return True
+        if tokens[0] in ("\\favorite", "/favorite") and tokens[1:2] in (["save"], ["delete"]):
+            return True
     return False
 
 

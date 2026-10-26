@@ -24,6 +24,7 @@ from mycli.packages.sql_utils import (
     last_word,
     need_completion_refresh,
     need_completion_reset,
+    need_favorite_commands_refresh,
     queries_start_with,
     query_has_where_clause,
     query_is_single_table_update,
@@ -519,7 +520,11 @@ def test_is_dropping_database_skips_statements_without_enough_keywords():
         ('create table foo (id int);', True),
         ('use foo;', True),
         ('\\r foo localhost root', True),
-        ('\\u foo', True),
+        ('\\c foo', True),
+        ('/c foo', True),
+        ('\\C foo', True),
+        ('\\u foo', False),
+        ('/u', False),
         ('connect foo localhost root', True),
         ('drop table foo;', True),
         ('rename table foo to bar;', True),
@@ -544,7 +549,9 @@ def test_need_completion_refresh_ignores_queries_that_fail_to_split(monkeypatch)
     [
         ('select 1;', False),
         ('use foo;', True),
-        ('\\u foo', True),
+        ('\\c foo', True),
+        ('/c foo', True),
+        ('\\u foo', False),
         ('\\r', False),
         ('\\r foo localhost root', True),
         ('connect', False),
@@ -684,3 +691,24 @@ def test_is_mutating(status_plain, expected):
 )
 def test_is_select(status_plain, expected):
     assert is_select(status_plain) is expected
+
+
+@pytest.mark.parametrize(
+    ('queries', 'expected'),
+    [
+        ('\\fs q SELECT 1; SELECT 2', True),
+        ('/fs q SELECT 1', True),
+        ('\\fd q', True),
+        ('/FD q', True),
+        ('select 1; \\fd q', True),
+        ('/favorite save q SELECT 1', True),
+        ('\\favorite delete q', True),
+        ('/favorite edit q', False),
+        ('/favorite', False),
+        ('\\f q', False),
+        ('select 1', False),
+        ('', False),
+    ],
+)
+def test_need_favorite_commands_refresh(queries, expected):
+    assert need_favorite_commands_refresh(queries) is expected

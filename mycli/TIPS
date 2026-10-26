@@ -72,7 +72,7 @@ Manage favorite queries with /favorite!
 
 /| <command> sends the next result to a subprocess!
 
-/t toggles timing of commands!
+/timing toggles timing of commands!
 
 /r or /connect reconnects to the server!
 
@@ -108,7 +108,7 @@ use "/system <command>" to execute a shell command!
 
 /T or /tableformat changes the interactive table format!
 
-/u or /use changes to a new database!
+/c or /use changes to a new database!
 
 the /watch command executes a query every N seconds!
 

@@ -44,7 +44,7 @@ from prompt_toolkit.lexers import PygmentsLexer
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 import pymysql
-from pymysql.cursors import Cursor
+from pymysql.cursors import Cursor, SSCursor
 
 import mycli as mycli_package
 from mycli.clibuffer import cli_is_multiline
@@ -92,6 +92,7 @@ from mycli.packages.sql_utils import (
     is_select,
     need_completion_refresh,
     need_completion_reset,
+    need_favorite_commands_refresh,
 )
 from mycli.packages.sqlresult import SQLResult
 from mycli.packages.string_utils import sanitize_terminal_title
@@ -155,19 +156,26 @@ def capture_last_result(result: SQLResult, logger: 'logging.Logger') -> None:
 
     Keyed off `header` plus a live cursor rather than is_select(), because for a
     result set the status reads "N rows in set" -- its first word is a digit, so
-    is_select() is False. Draining the cursor here means the formatter has to be
-    handed the materialised list instead.
+    is_select() is False. The rows are read and the cursor rewound, so the
+    formatter and the warnings check still get the cursor itself, with the
+    column types (numeric alignment) and warning count only it carries.
+
+    An unbuffered SSCursor (--unbuffered) cannot be rewound, and keeping a copy
+    would hold the whole result in memory, which is what --unbuffered avoids;
+    those results are not captured.
     """
-    if not result.header or not isinstance(result.rows, Cursor):
+    rows = result.rows
+    if not result.header or not isinstance(rows, Cursor) or isinstance(rows, SSCursor):
         return
     try:
-        captured = list(result.rows)
+        captured = list(rows.fetchall())
+        if captured:
+            rows.scroll(0, mode='absolute')
     except Exception:
         logger.debug('Could not capture the result for \\last.', exc_info=True)
         return
     header = result.header if isinstance(result.header, list) else [result.header]
     special.store_last_result(header, captured)
-    result.rows = captured
 
 
 def _create_history(mycli: 'MyCli') -> FileHistoryWithTimestamp | None:
@@ -645,6 +653,8 @@ def _single_paged_output_results(
                 else:
                     watch_count += 1
 
+            capture_last_result(result, mycli.logger)
+
             if mycli.prompt_session is not None:
                 terminal_width = mycli.prompt_session.output.get_size().columns
             else:
@@ -1083,6 +1093,9 @@ def _one_iteration(
 
         if need_completion_refresh(text):
             mycli.refresh_completions(reset=dropping_active_database or need_completion_reset(text))
+
+        if need_favorite_commands_refresh(text):
+            mycli.register_favorite_commands()
     finally:
         if dropping_active_database and not successful:
             mycli.refresh_completions()
@@ -1173,9 +1186,17 @@ def main_repl(mycli: 'MyCli') -> None:
 
     try:
         while True:
+            recorded = len(mycli.query_history)
             _one_iteration(mycli, state)
+            if isinstance(history, AtuinHistory):
+                # 1 when the query failed or never ran (declined, refused, a
+                # client-side error), as a shell records a non-zero status.
+                ran = mycli.query_history[recorded:]
+                history.finish(0 if ran and ran[-1].successful else 1)
             state.iterations += 1
     except EOFError:
+        if isinstance(history, AtuinHistory):
+            history.finish(0)  # \q
         special.close_tee()
         if mycli.verbosity >= 0:
             mycli.echo('Goodbye!')

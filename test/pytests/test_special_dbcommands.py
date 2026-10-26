@@ -360,3 +360,53 @@ def test_status_uses_system_default_pager_when_enabled_without_env(monkeypatch) 
     result = status(cursor)[0]
 
     assert ('Current pager:', 'System default') in result.rows
+
+
+def no_backslash_escapes_cursor(results):
+    """A real pymysql cursor, quoting as a NO_BACKSLASH_ESCAPES session does, that records what it sends."""
+    import pymysql
+    from pymysql.constants import SERVER_STATUS
+
+    conn = pymysql.connections.Connection(defer_connect=True)
+    conn.server_status = SERVER_STATUS.SERVER_STATUS_NO_BACKSLASH_ESCAPES
+    cur = conn.cursor()
+    sent = []
+
+    def query(sql):
+        sent.append(sql)
+        cur.description, cur._rows = results.pop(0)
+        cur.rownumber = 0
+        return len(cur._rows)
+
+    cur._query = query
+    return cur, sent
+
+
+def test_u_quotes_the_user_with_parameters_under_no_backslash_escapes():
+    """A backslash-escaped literal is mis-read when backslashes are not escapes."""
+    from mycli.packages.special.dbcommands import list_users
+
+    cur, sent = no_backslash_escapes_cursor([
+        ((('host',),), (('%',), ('localhost',))),
+        ((('Grants',),), (('GRANT USAGE',),)),
+        ((('Grants',),), (('GRANT ALL',),)),
+    ])
+
+    results = list_users(cur, arg="o'brien\\")
+
+    assert sent == [
+        "SELECT host FROM mysql.user WHERE user = 'o''brien\\' ORDER BY host",
+        "SHOW GRANTS FOR 'o''brien\\'@'%'",
+        "SHOW GRANTS FOR 'o''brien\\'@'localhost'",
+    ]
+    assert [r.rows for r in results] == [(('GRANT USAGE',),), (('GRANT ALL',),)]
+
+
+def test_u_with_an_explicit_host_quotes_both_parts():
+    from mycli.packages.special.dbcommands import list_users
+
+    cur, sent = no_backslash_escapes_cursor([((('Grants',),), (('GRANT USAGE',),))])
+
+    list_users(cur, arg="'app'@'10.%'")
+
+    assert sent == ["SHOW GRANTS FOR 'app'@'10.%'"]

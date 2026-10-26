@@ -83,11 +83,6 @@ def list_tables_only(cur: Cursor, arg: str | None = None, command_verbosity: boo
     return [SQLResult(header=header, rows=cur)]
 
 
-def _escape_string_literal(value: str) -> str:
-    """Escape a MySQL string literal to prevent SQL injection."""
-    return value.replace('\\', '\\\\').replace("'", "\\'")
-
-
 # account_locked/password_expired only exist on MySQL 5.7.6+; fall back for older servers.
 _USER_LIST_QUERY = "SELECT user, host, plugin, account_locked AS locked, password_expired AS pw_expired FROM mysql.user ORDER BY user, host"
 _USER_LIST_QUERY_LEGACY = "SELECT user, host, plugin FROM mysql.user ORDER BY user, host"
@@ -131,10 +126,11 @@ def _list_all_users(cur: Cursor) -> list[SQLResult]:
 
 def _accounts_for(cur: Cursor, user: str) -> list[tuple[str, str]] | None:
     """Every host the named user is defined for; None when mysql.user is unreadable."""
-    query = f"SELECT host FROM mysql.user WHERE user = '{_escape_string_literal(user)}' ORDER BY host"
+    # Parameters, so pymysql quotes for the session (NO_BACKSLASH_ESCAPES too).
+    query = "SELECT host FROM mysql.user WHERE user = %s ORDER BY host"
     logger.debug(query)
     try:
-        cur.execute(query)
+        cur.execute(query, (user,))
     except MySQLError as e:
         logger.debug("Host lookup failed: %s", e)
         return None
@@ -156,10 +152,10 @@ def _show_user_grants(cur: Cursor, spec: str) -> list[SQLResult]:
 
     results: list[SQLResult] = []
     for user, host in accounts:
-        query = f"SHOW GRANTS FOR '{_escape_string_literal(user)}'@'{_escape_string_literal(host)}'"
+        query = "SHOW GRANTS FOR %s@%s"
         logger.debug(query)
         try:
-            cur.execute(query)
+            cur.execute(query, (user, host))
         except MySQLError as e:
             results.append(SQLResult(status=f"{user}@{host}: {e}"))
             continue

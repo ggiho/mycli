@@ -1,10 +1,11 @@
 from functools import partial
 import logging
-import threading
+import re
 import webbrowser
 
 import click
 import prompt_toolkit
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import (
@@ -12,6 +13,7 @@ from prompt_toolkit.filters import (
     completion_is_selected,
     control_is_searchable,
     emacs_mode,
+    is_searching,
     shift_selection_mode,
     vi_mode,
 )
@@ -20,9 +22,10 @@ from prompt_toolkit.key_binding.bindings.named_commands import register as ptool
 from prompt_toolkit.key_binding.key_processor import KeyPressEvent
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.selection import SelectionType
+import sqlparse
 
 from mycli.constants import DOCS_URL
-from mycli.packages import key_binding_utils
+from mycli.packages import key_binding_utils, special
 from mycli.packages.ptoolkit import atuin
 from mycli.packages.ptoolkit.fzf import search_history
 from mycli.packages.ptoolkit.utils import safe_invalidate_display
@@ -81,41 +84,60 @@ def edit_and_execute(event: KeyPressEvent) -> None:
     buff.open_in_editor(validate_and_handle=False)
 
 
-def _run_explain(mycli, sql: str, app) -> None:
-    """Run EXPLAIN for the buffered query and print a small preview.
+# Statements EXPLAIN accepts that it only plans and never runs. EXPLAIN ANALYZE
+# does run the statement, and is excluded by not allowing a leading EXPLAIN.
+EXPLAINABLE_KEYWORDS = frozenset({'select', 'insert', 'update', 'delete', 'replace', 'table', 'with'})
 
-    Runs on a worker thread so the prompt stays responsive; the output is
-    plain text because prompt_toolkit owns the screen at this point.
+
+def explainable_statement(text: str, cursor_position: int) -> str | None:
+    """Return the statement under the cursor if EXPLAIN can take it, else None.
+
+    Comments are dropped (optimizer hints are kept), so what gets explained is
+    exactly what was checked here.
     """
-    sql = sql.strip().rstrip(';')
-    if not sql:
-        return
-    lowered = sql.lower().lstrip()
-    # Statements that EXPLAIN cannot take, or that are already an explain.
-    if lowered.startswith(('explain', 'desc ', 'describe ', 'show ', 'set ', '\\', '/', 'use ')):
-        return
+    statements = list(special.split_queries(text))
+    if not statements:
+        return None
+    # Each statement that ends before the cursor shifts it one along.
+    index = max(len(list(special.split_queries(text[:cursor_position]))) - 1, 0)
+    sql = statements[min(index, len(statements) - 1)]
+    sql = sqlparse.format(sql, strip_comments=True).strip().rstrip(';').strip()
+    sql = re.sub(r'\\[Ggx]$', '', sql).strip()
+    # With a custom delimiter one "statement" can still hold a `;`.
+    if len(sqlparse.split(sql)) != 1:
+        return None
+    tokens = sqlparse.parse(sql)[0].flatten()
+    first = next((t.value.lower() for t in tokens if not t.is_whitespace and t.ttype not in sqlparse.tokens.Comment), '')
+    return sql if first in EXPLAINABLE_KEYWORDS else None
+
+
+def _run_explain(mycli, sql: str) -> None:
+    """Run EXPLAIN for one statement and print a small preview.
+
+    Called through run_in_terminal, so it runs on the main thread with the
+    prompt out of the way. The statement goes straight to a cursor: never
+    through SQLExecute.run(), which would split it and dispatch special commands.
+    """
     try:
-        lines: list[str] = []
-        for result in mycli.sqlexecute.run(f'EXPLAIN {sql}'):
-            if not result.header or not result.rows:
-                continue
-            header = result.header if isinstance(result.header, list) else [result.header]
-            rows = [tuple('NULL' if v is None else str(v) for v in row) for row in result.rows]
-            widths = [len(h) for h in header]
-            for row in rows:
-                for i, value in enumerate(row):
-                    widths[i] = max(widths[i], len(value))
-            lines.append(' | '.join(h.ljust(widths[i]) for i, h in enumerate(header)))
-            lines.append('-+-'.join('-' * w for w in widths))
-            lines.extend(' | '.join(v.ljust(widths[i]) for i, v in enumerate(row)) for row in rows)
-        if lines:
-            click.echo('\n--- EXPLAIN Preview (F5) ---')
-            for line in lines:
-                click.echo(line)
-            click.echo('---')
-        app.invalidate()
+        with mycli.sqlexecute.conn.cursor() as cur:
+            cur.execute(f'EXPLAIN {sql}')
+            header = [column[0] for column in cur.description or []]
+            rows = [tuple('NULL' if v is None else str(v) for v in row) for row in cur.fetchall()]
     except Exception as e:
         _logger.debug('EXPLAIN preview failed: %r', e)
+        return
+    if not header or not rows:
+        return
+    widths = [len(h) for h in header]
+    for row in rows:
+        for i, value in enumerate(row):
+            widths[i] = max(widths[i], len(value))
+    click.echo('\n--- EXPLAIN Preview (F5) ---')
+    click.echo(' | '.join(h.ljust(widths[i]) for i, h in enumerate(header)))
+    click.echo('-+-'.join('-' * w for w in widths))
+    for row in rows:
+        click.echo(' | '.join(v.ljust(widths[i]) for i, v in enumerate(row)))
+    click.echo('---')
 
 
 def mycli_bindings(mycli) -> KeyBindings:
@@ -141,18 +163,20 @@ def mycli_bindings(mycli) -> KeyBindings:
 
     @kb.add('f5')
     def _(event: KeyPressEvent) -> None:
-        """Run EXPLAIN on the buffered query and show the plan."""
+        """Run EXPLAIN on the statement under the cursor and show the plan."""
         _logger.debug('Detected F5 key.')
-        sql = event.app.current_buffer.text
-        if sql.strip():
-            threading.Thread(target=_run_explain, args=(mycli, sql, event.app), daemon=True).start()
+        buffer = event.app.current_buffer
+        sql = explainable_statement(buffer.text, buffer.cursor_position)
+        if sql is not None:
+            run_in_terminal(partial(_run_explain, mycli, sql))
 
     # Registered only when enabled, so the default Up binding is untouched
-    # otherwise. ~shift_selection_mode leaves shift-selection to prompt_toolkit.
+    # otherwise. ~shift_selection_mode leaves shift-selection to prompt_toolkit,
+    # and ~is_searching leaves Up to an active Ctrl-R or / search.
     if _atuin_keys_enabled():
         atuin_author = _atuin_setting('atuin_author', 'mycli')
 
-        @kb.add('up', filter=~shift_selection_mode)
+        @kb.add('up', filter=~shift_selection_mode & ~is_searching)
         def _(event: KeyPressEvent) -> None:
             """Open atuin's history UI, mirroring `atuin init zsh`'s up-arrow widget."""
             buffer = event.current_buffer

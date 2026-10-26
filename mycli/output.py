@@ -39,22 +39,16 @@ from mycli.packages.sqlresult import SQLResult
 from mycli.packages.tabular_output import sql_format
 from mycli.sqlexecute import FIELD_TYPES
 
-# Table formats whose single-column results may be laid out as an ls-style grid.
-# Data formats (csv, tsv, jsonl, sql-insert, ...) keep one value per line.
+# Boxed table formats whose single-column results may be laid out as an ls-style
+# grid in a frame. Borderless and markup formats (plain, simple, github, pipe,
+# rst, ...) and data formats (csv, tsv, jsonl, ...) keep one value per line.
 GRID_FORMATS = frozenset({
     'ascii',
     'ascii_escaped',
-    'plain',
-    'simple',
-    'minimal',
     'grid',
     'fancy_grid',
-    'pipe',
-    'orgtbl',
     'psql',
     'psql_unicode',
-    'rst',
-    'github',
     'double',
     'mysql',
     'mysql_unicode',

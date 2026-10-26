@@ -19,9 +19,26 @@ TRANSLATIONS.update({ord(c): None for c in _ZERO_WIDTH})
 QUOTES = '\'"`'
 
 
-def strip_invisible(text: str) -> str:
-    """Replace invisible characters everywhere, literals included."""
-    return text.translate(TRANSLATIONS)
+def _comment_length(text: str, i: int) -> int:
+    """Length of the comment starting at `text[i]`, or 0 if none starts there.
+
+    A line comment stops before its line break. `--` opens one only when followed
+    by whitespace or a control character, as in MySQL (`1--1` is arithmetic).
+    `/*!` and `/*+` are executed by MySQL, so they are code, not comments.
+    """
+    if text.startswith('/*', i) and not text.startswith(('/*!', '/*+'), i):
+        end = text.find('*/', i + 2)
+        return (len(text) if end == -1 else end + 2) - i
+    if text.startswith('--', i) and i + 2 < len(text):
+        follower = TRANSLATIONS.get(ord(text[i + 2]), text[i + 2])
+        is_line_comment = follower is not None and (follower.isspace() or ord(follower) < 32)
+    else:
+        is_line_comment = text.startswith('#', i)
+    if is_line_comment:
+        # U+2028/U+2029 become newlines too, so they end the comment as well.
+        ends = (text.find(c, i) for c in '\n' + _LINE_LIKE)
+        return min((end for end in ends if end != -1), default=len(text)) - i
+    return 0
 
 
 def strip_invisible_outside_literals(text: str) -> str:
@@ -30,6 +47,9 @@ def strip_invisible_outside_literals(text: str) -> str:
     Inside `'...'`, `"..."` and backticks the characters are data, so rewriting
     them would silently corrupt a value or an identifier. An unterminated quote
     protects the remainder of the text, which errs towards changing nothing.
+
+    Comments are not data, so they are cleaned like code; a quote inside one
+    (`-- don't`) must not be taken for the start of a literal.
     """
     out: list[str] = []
     quote: str | None = None
@@ -38,6 +58,10 @@ def strip_invisible_outside_literals(text: str) -> str:
         char = text[i]
 
         if quote is None:
+            if comment_length := _comment_length(text, i):
+                out.append(text[i : i + comment_length].translate(TRANSLATIONS))
+                i += comment_length
+                continue
             if char in QUOTES:
                 quote = char
                 out.append(char)

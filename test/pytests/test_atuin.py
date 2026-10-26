@@ -82,6 +82,8 @@ def test_load_is_newest_first_and_keeps_duplicates(fake_atuin, history):
     argv = fake.calls[0]
     assert argv[:2] == ['atuin', 'search']
     assert argv[argv.index('--author') + 1] == 'mycli'
+    # A user's filter_mode (session, directory, ...) would otherwise hide every entry.
+    assert argv[argv.index('--filter-mode') + 1] == 'global'
     # Duplicates feed the frecency score.
     assert '--include-duplicates' in argv
     # --reverse would make --limit pick the oldest entries; the order is flipped here instead.
@@ -107,13 +109,55 @@ def test_falls_back_to_the_file_when_atuin_fails(fake_atuin, history, tmp_path):
     assert list(history().load_history_strings()) == ['old query']
 
 
-def test_store_tags_author_and_session_without_a_fake_exit(fake_atuin, history):
+def test_store_tags_author_and_session(fake_atuin, history):
     fake = fake_atuin(stdout='01a040f0cb257242b718f2ab411b84ce\n')
     history(author='mycli-test').store_string('SELECT 1')
-    assert fake.calls == [['atuin', 'history', 'start', '--author', 'mycli-test', 'SELECT 1']]
-    # `history end` needs an exit code we cannot know at store time.
-    assert not any('end' in call for call in fake.calls)
+    # `--` keeps SQL that starts with `-` (a leading comment) from parsing as an option.
+    assert fake.calls == [['atuin', 'history', 'start', '--author', 'mycli-test', '--', 'SELECT 1']]
     assert fake.env['ATUIN_SESSION'] == session_id('mycli-test')
+
+
+def test_sql_starting_with_a_comment_follows_the_separator(fake_atuin, history):
+    fake = fake_atuin(stdout='id\n')
+    history().store_string('-- why\nSELECT 1')
+    argv = fake.calls[0]
+    assert argv[argv.index('--') + 1] == '-- why\nSELECT 1'
+
+
+def test_finish_ends_the_started_entry_with_its_id(fake_atuin, history):
+    fake = fake_atuin(stdout='01a040f0cb257242b718f2ab411b84ce\n')
+    h = history()
+    h.store_string('SELECT 1')
+    h.finish(1)
+
+    end = fake.calls[1]
+    assert end[:3] == ['atuin', 'history', 'end']
+    assert end[end.index('--exit') + 1] == '1'
+    assert int(end[end.index('--duration') + 1]) >= 0
+    assert end[-2:] == ['--', '01a040f0cb257242b718f2ab411b84ce']
+    h.finish(0)  # already ended
+    assert len(fake.calls) == 2
+
+
+def test_a_second_store_ends_the_entry_before_it(fake_atuin, history):
+    """\\e and \\llm prompt again within one REPL iteration."""
+    fake = fake_atuin(stdout='first\n')
+    h = history()
+    h.store_string('\\llm show tables')
+    fake.stdout = 'second\n'
+    h.store_string('SHOW TABLES')
+
+    assert [call[2] for call in fake.calls] == ['start', 'end', 'start']
+    assert fake.calls[1][fake.calls[1].index('--exit') + 1] == '0'
+    assert fake.calls[1][-1] == 'first'
+
+
+def test_a_failed_start_is_not_ended(fake_atuin, history):
+    fake = fake_atuin(returncode=2, stderr='error: unexpected argument')
+    h = history()
+    h.store_string('SELECT 1')
+    h.finish(0)
+    assert [call[2] for call in fake.calls] == ['start']
 
 
 def test_password_changes_are_not_sent_to_atuin(fake_atuin, history):
@@ -229,6 +273,22 @@ def test_reports_failure_so_the_caller_can_fall_back(fake_atuin):
     assert search_history(FakeEvent(FakeBuffer('SELECT 1')), 'mycli') is False
 
 
+def test_a_failing_picker_is_not_pasted_into_the_buffer(fake_atuin):
+    """On failure stderr carries atuin's error message, not a pick."""
+    fake_atuin(returncode=1, stderr='Error: failed to deserialize config\n')
+    buffer = FakeBuffer('SEL')
+    assert search_history(FakeEvent(buffer), 'mycli', up_key_binding=True) is False
+    assert buffer.text == 'SEL'
+    assert buffer.accepted is False
+
+
+def test_picker_pins_the_up_key_filter_mode_to_the_session(fake_atuin):
+    """A user's filter_mode_shell_up_key_binding beats --filter-mode, and would offer shell commands."""
+    fake = fake_atuin(stderr='')
+    search_history(FakeEvent(FakeBuffer()), 'mycli', up_key_binding=True)
+    assert fake.env['ATUIN_FILTER_MODE_SHELL_UP_KEY_BINDING'] == 'session'
+
+
 def _up_bindings(config):
     from mycli.key_bindings import mycli_bindings
 
@@ -254,6 +314,29 @@ def test_up_is_rebound_when_enabled(monkeypatch):
 
     monkeypatch.setattr(atuin_module, 'is_available', lambda: True)
     assert len(_up_bindings({'main': {'atuin_history': 'True', 'atuin_keys': 'True'}})) == 1
+
+
+def test_up_stays_with_an_active_search(monkeypatch):
+    """Up during Ctrl-R or / must move through the search, not open atuin."""
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.application.current import set_app
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.layout import BufferControl, HSplit, Layout, Window
+    from prompt_toolkit.layout.controls import SearchBufferControl
+
+    from mycli.packages.ptoolkit import atuin as atuin_module
+
+    monkeypatch.setattr(atuin_module, 'is_available', lambda: True)
+    (binding,) = _up_bindings({'main': {'atuin_history': 'True', 'atuin_keys': 'True'}})
+
+    search_control = SearchBufferControl(Buffer())
+    control = BufferControl(Buffer(), search_buffer_control=search_control)
+    app = Application(layout=Layout(HSplit([Window(control), Window(search_control)]), focused_element=control))
+    with set_app(app):
+        assert binding.filter() is True
+        app.layout.search_links[search_control] = control
+        app.layout.focus(search_control)
+        assert binding.filter() is False
 
 
 def test_up_not_rebound_when_atuin_history_is_off(monkeypatch):

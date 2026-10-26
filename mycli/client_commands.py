@@ -319,19 +319,30 @@ class ClientCommandsMixin:
         an edited query body is picked up without re-registering.
 
         A name is skipped when it cannot be typed as one command, or when it
-        would shadow a real one -- a favorite must never quietly replace `/dt`.
+        would shadow a real one -- a favorite must never quietly replace `/dt`,
+        nor `Q` replace `\\q`, so the comparison ignores case. Commands for
+        favorites that no longer exist are removed, so this can be rerun after
+        `\\fs` and `\\fd`.
         """
         favorites = getattr(FavoriteQueries, 'instance', None)
         if favorites is None:
             return
         registered: set[str] = getattr(self, '_favorite_commands', set())
+        names = set(favorites.list())
+        for name in registered - names:
+            for command in (f'\\{name}', f'/{name}'):
+                special_main.COMMANDS.pop(command, None)
+                special_main.CASE_SENSITIVE_COMMANDS.discard(command)
+        registered &= names
+        ours = {f'{prefix}{name}' for name in registered for prefix in ('\\', '/')}
+        taken = {command.lower() for command in special_main.COMMANDS if command not in ours}
         for name in favorites.list():
             # list() yields None for a query the config could not clean up.
             if not name or len(name.split()) != 1:
                 logger.debug('Not registering favorite %r as a command: it is not a single word.', name)
                 continue
             command = f'\\{name}'
-            if name not in registered and (command in special_main.COMMANDS or f'/{name}' in special_main.COMMANDS):
+            if command.lower() in taken or f'/{name}'.lower() in taken:
                 logger.debug('Not registering favorite %r as a command: %s already exists.', name, command)
                 continue
             query = favorites.get(name) or ''

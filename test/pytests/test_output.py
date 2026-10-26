@@ -732,6 +732,17 @@ def test_format_sqlresult_keeps_table_for_data_formats() -> None:
     assert list(OutputMixin.format_sqlresult(cli, result, grid_width=80)) == ['plain output']
 
 
+@pytest.mark.parametrize('format_name', ['plain', 'simple', 'minimal', 'github', 'pipe', 'rst', 'orgtbl'])
+def test_format_sqlresult_keeps_borderless_formats_free_of_a_grid_frame(format_name: str) -> None:
+    """A boxed frame would stop github output being Markdown, and so on."""
+    cli = make_bare_mycli()
+    cli.main_formatter = DummyFormatter(format_name=format_name)
+    cli.main_formatter._output_formats[format_name] = cli.main_formatter._output_formats['ascii']
+    result = SQLResult(header=['Database'], rows=[('a',), ('b',)])
+
+    assert list(OutputMixin.format_sqlresult(cli, result, grid_width=80)) == ['plain output']
+
+
 def test_format_sqlresult_materializes_cursor_rows_for_grid(monkeypatch: pytest.MonkeyPatch) -> None:
     cli = make_bare_mycli()
     rows = FakeCursorBase(rows=[('a',), ('b',)], rowcount=2, description=[('Database', 253)])
