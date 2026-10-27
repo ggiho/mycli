@@ -58,7 +58,7 @@ from mycli.constants import (
     HOME_URL,
     ISSUES_URL,
 )
-from mycli.key_bindings import mycli_bindings
+from mycli.key_bindings import EXPLAIN_RUNNING, mycli_bindings
 from mycli.lexer import MyCliLexer
 from mycli.packages import special
 from mycli.packages.filepaths import dir_path_exists
@@ -151,6 +151,10 @@ def complete_while_typing_filter() -> bool:
         return not bool(re.search(r'[\s!-/:-@\[-^\{-~]', punctuation_check))
 
 
+# \last keeps a copy of the rows, so larger results are not kept.
+LAST_RESULT_MAX_ROWS = 100_000
+
+
 def capture_last_result(result: SQLResult, logger: 'logging.Logger') -> None:
     """Remember a result set so \\last and \\copy can reuse it.
 
@@ -162,10 +166,16 @@ def capture_last_result(result: SQLResult, logger: 'logging.Logger') -> None:
 
     An unbuffered SSCursor (--unbuffered) cannot be rewound, and keeping a copy
     would hold the whole result in memory, which is what --unbuffered avoids;
-    those results are not captured.
+    those results are not captured, and neither are ones over LAST_RESULT_MAX_ROWS.
     """
     rows = result.rows
-    if not result.header or not isinstance(rows, Cursor) or isinstance(rows, SSCursor):
+    if not result.header or not isinstance(rows, Cursor):
+        return
+    if isinstance(rows, SSCursor):
+        special.forget_last_result('the last result was unbuffered, so it was not kept')
+        return
+    if rows.rowcount > LAST_RESULT_MAX_ROWS:
+        special.forget_last_result(f'the last result had more than {LAST_RESULT_MAX_ROWS:,} rows, too many to keep')
         return
     try:
         captured = list(rows.fetchall())
@@ -175,7 +185,7 @@ def capture_last_result(result: SQLResult, logger: 'logging.Logger') -> None:
         logger.debug('Could not capture the result for \\last.', exc_info=True)
         return
     header = result.header if isinstance(result.header, list) else [result.header]
-    special.store_last_result(header, captured)
+    special.store_last_result(header, captured, rows.description)
 
 
 def _create_history(mycli: 'MyCli') -> FileHistoryWithTimestamp | None:
@@ -569,7 +579,7 @@ def _output_results(
             numeric_alignment=mycli.numeric_alignment,
             binary_display=mycli.binary_display,
             max_width=max_width,
-            grid_width=None if special.is_redirected() else terminal_width,
+            grid_width=terminal_width if mycli.grid_output and not special.is_redirected() else None,
         )
 
         duration = time.time() - start
@@ -669,7 +679,7 @@ def _single_paged_output_results(
                 numeric_alignment=mycli.numeric_alignment,
                 binary_display=mycli.binary_display,
                 max_width=max_width,
-                grid_width=None if special.is_redirected() else terminal_width,
+                grid_width=terminal_width if mycli.grid_output and not special.is_redirected() else None,
             )
             duration = time.time() - start
 
@@ -743,6 +753,10 @@ def _keepalive_hook(
     if mycli.keepalive_ticks is None:
         return
     if mycli.keepalive_ticks < 1:
+        return
+
+    if EXPLAIN_RUNNING.is_set():
+        # F5's EXPLAIN is using the connection on another thread.
         return
 
     mycli._keepalive_counter += 1
@@ -826,7 +840,8 @@ def _one_iteration(
     mycli: 'MyCli',
     state: ReplState,
     text: str | None = None,
-) -> None:
+) -> bool:
+    """Read and run one line. Return True if it succeeded, False if it failed or never ran."""
     sqlexecute = mycli.sqlexecute
     assert sqlexecute is not None
 
@@ -850,7 +865,7 @@ def _one_iteration(
                     message=loaded_message_fn,
                 )
         except KeyboardInterrupt:
-            return
+            return False
 
         special.set_expanded_output(False)
         special.set_forced_horizontal_output(False)
@@ -867,16 +882,16 @@ def _one_iteration(
             mycli.logger.error('sql: %r, error: %r', text, e)
             mycli.logger.error('traceback: %r', traceback.format_exc())
             mycli.echo(str(e), err=True, fg='red')
-            return
+            return False
 
         try:
             if handle_clip_command(mycli, text):
-                return
+                return True
         except RuntimeError as e:
             mycli.logger.error('sql: %r, error: %r', text, e)
             mycli.logger.error('traceback: %r', traceback.format_exc())
             mycli.echo(str(e), err=True, fg='red')
-            return
+            return False
 
         while special.is_llm_command(text):
             start = time.time()
@@ -903,27 +918,27 @@ def _one_iteration(
                     message=loaded_message_fn,
                 )
             except KeyboardInterrupt:
-                return
+                return False
             except special.FinishIteration as e:
                 if e.results:
                     _output_results(mycli, state, e.results, start)
-                return
+                return True
             except RuntimeError as e:
                 mycli.logger.error('sql: %r, error: %r', text, e)
                 mycli.logger.error('traceback: %r', traceback.format_exc())
                 mycli.echo(str(e), err=True, fg='red')
-                return
+                return False
 
     text = text.strip()
     if not text:
-        return
+        return True
 
     original_text = text
     try:
         polars_pipeline = parse_polars_transform(text)
     except PolarsTransformError as exc:
         mycli.echo(str(exc), err=True, fg='red')
-        return
+        return False
     if polars_pipeline is not None:
         text = polars_pipeline.sql
     elif is_redirect_command(text):
@@ -935,7 +950,7 @@ def _one_iteration(
             mycli.logger.error('sql: %r, error: %r', text, e)
             mycli.logger.error('traceback: %r', traceback.format_exc())
             mycli.echo(str(e), err=True, fg='red')
-            return
+            return False
 
     if mycli.sandbox_mode and not is_sandbox_allowed(text):
         mycli.echo(
@@ -943,7 +958,7 @@ def _one_iteration(
             err=True,
             fg='red',
         )
-        return
+        return False
 
     if mycli.destructive_warning:
         destroy = confirm_destructive_query(mycli.destructive_keywords, text)
@@ -953,7 +968,7 @@ def _one_iteration(
             mycli.echo('Your call!')
         else:
             mycli.echo('Wise choice!')
-            return
+            return False
 
     dropping_active_database = is_dropping_database(text, sqlexecute.dbname)
     if dropping_active_database:
@@ -1014,9 +1029,8 @@ def _one_iteration(
         successful = True
     except pymysql.err.InterfaceError:
         if not mycli.reconnect():
-            return
-        _one_iteration(mycli, state, text)
-        return
+            return False
+        return _one_iteration(mycli, state, text)
     except EOFError as e:
         raise e
     except KeyboardInterrupt:
@@ -1058,9 +1072,8 @@ def _one_iteration(
             )
         elif e1.args[0] in (2003, 2006, 2013):
             if not mycli.reconnect():
-                return
-            _one_iteration(mycli, state, text)
-            return
+                return False
+            return _one_iteration(mycli, state, text)
         else:
             mycli.logger.error('sql: %r, error: %r', text, e1)
             mycli.logger.error('traceback: %r', traceback.format_exc())
@@ -1102,8 +1115,13 @@ def _one_iteration(
         if mycli.logfile is False:
             mycli.echo('Warning: This query was not logged.', err=True, fg='red')
 
+    if not successful:
+        # Or \last would pass off the result of an earlier statement as this one's.
+        special.forget_last_result('the last query failed')
+
     query = Query(original_text if polars_pipeline is not None else text, successful, state.mutating)
     mycli.query_history.append(query)
+    return successful
 
 
 def _contributors_picker() -> str:
@@ -1186,13 +1204,17 @@ def main_repl(mycli: 'MyCli') -> None:
 
     try:
         while True:
-            recorded = len(mycli.query_history)
-            _one_iteration(mycli, state)
+            successful = _one_iteration(mycli, state)
             if isinstance(history, AtuinHistory):
-                # 1 when the query failed or never ran (declined, refused, a
-                # client-side error), as a shell records a non-zero status.
-                ran = mycli.query_history[recorded:]
-                history.finish(0 if ran and ran[-1].successful else 1)
+                try:
+                    # 1 when the query failed or never ran (declined, refused, a
+                    # client-side error), as a shell records a non-zero status.
+                    history.finish(0 if successful else 1)
+                    if warning := history.take_warning():
+                        mycli.echo(warning, err=True, fg='red')
+                except KeyboardInterrupt:
+                    # History bookkeeping must not end the session.
+                    pass
             state.iterations += 1
     except EOFError:
         if isinstance(history, AtuinHistory):

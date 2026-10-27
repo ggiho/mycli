@@ -241,6 +241,11 @@ login_path_as_host = False
 # and using normal tabular format otherwise. (This applies to statements terminated by ; or \G.)
 auto_vertical_output = False
 
+# Lay out single-column results as an ls-style grid of columns on screen, when
+# they are shown in a boxed table format and every value fits on one line
+# without ambiguous blanks. Redirected output is never laid out this way.
+grid_output = True
+
 # keyword casing preference. Possible values "lower", "upper", "auto"
 keyword_casing = auto
 

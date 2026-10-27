@@ -13,6 +13,7 @@ import pymysql
 import pytest
 
 import mycli.main_modes.repl as repl_mode
+from mycli.packages.special import iocommands
 from mycli.packages.sqlresult import SQLResult
 
 
@@ -149,6 +150,7 @@ def make_repl_cli(sqlexecute: Any | None = None) -> Any:
     cli.keepalive_ticks = None
     cli._keepalive_counter = 0
     cli.auto_vertical_output = False
+    cli.grid_output = True
     cli.beep_after_seconds = 0.0
     cli.show_warnings = False
     cli.null_string = '<null>'
@@ -2336,40 +2338,83 @@ def test_single_paged_output_captures_last_and_keeps_cursor_for_warnings(monkeyp
     assert sqlexecute.ran == ['SHOW WARNINGS']
 
 
-def test_main_repl_ends_each_atuin_entry_with_the_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
-    from mycli.packages.ptoolkit.history import AtuinHistory
-    from mycli.types import Query
+class RecordingAtuinHistory(repl_mode.AtuinHistory):
+    """Records finish() calls; never runs atuin."""
 
-    class RecordingAtuinHistory(AtuinHistory):
-        def __init__(self) -> None:
-            self.finished: list[int] = []
+    def __init__(self, warnings: list[str] | None = None, interrupt: bool = False) -> None:
+        self.finished: list[int] = []
+        self.warnings = list(warnings or [])
+        self.interrupt = interrupt
 
-        def finish(self, exit_code: int) -> None:
-            self.finished.append(exit_code)
+    def finish(self, exit_code: int) -> None:
+        self.finished.append(exit_code)
+        if self.interrupt:
+            self.interrupt = False
+            raise KeyboardInterrupt()
 
-    history = RecordingAtuinHistory()
-    cli = make_repl_cli(SimpleNamespace())
+    def take_warning(self) -> str | None:
+        return self.warnings.pop(0) if self.warnings else None
+
+
+def run_main_repl_with_atuin(monkeypatch: pytest.MonkeyPatch, cli: Any, history: RecordingAtuinHistory, responses: list[Any]) -> None:
     cli.completer = SimpleNamespace(frecency_provider=None)
     monkeypatch.setattr(repl_mode, '_create_history', lambda mycli: history)
     monkeypatch.setattr(repl_mode, 'mycli_bindings', lambda mycli: 'bindings')
     monkeypatch.setattr(repl_mode, '_show_startup_banner', lambda mycli, sqlexecute: None)
-    monkeypatch.setattr(repl_mode, '_build_prompt_session', lambda mycli, state, history, key_bindings: None)
-    monkeypatch.setattr(repl_mode.special, 'close_tee', lambda: None)
+    monkeypatch.setattr(
+        repl_mode,
+        '_build_prompt_session',
+        lambda mycli, state, history, key_bindings: setattr(mycli, 'prompt_session', FakePromptSession(responses)),
+    )
     monkeypatch.setattr(repl_mode, 'set_all_external_titles', lambda mycli: None)
-    outcomes: list[bool | None] = [True, False, None]
-
-    def fake_one_iteration(mycli: Any, state: repl_mode.ReplState) -> None:
-        if not outcomes:
-            raise EOFError()  # \q
-        successful = outcomes.pop(0)
-        if successful is not None:  # None: declined, so no query ran
-            mycli.query_history.append(Query('select 1', successful, False))
-
-    monkeypatch.setattr(repl_mode, '_one_iteration', fake_one_iteration)
-
     repl_mode.main_repl(cli)
 
-    assert history.finished == [0, 1, 1, 0]
+
+def test_main_repl_ends_each_atuin_entry_with_the_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real _one_iteration reports the outcome, including paths that return early."""
+    patch_repl_runtime_defaults(monkeypatch)
+    monkeypatch.setattr(repl_mode, 'handle_clip_command', lambda mycli, text: text.startswith('\\clip'))
+    monkeypatch.setattr(repl_mode, 'confirm_destructive_query', lambda keywords, text: False if text.startswith('drop') else None)
+
+    def run(text: str) -> Iterator[SQLResult]:
+        if text == 'select bogus':
+            raise pymysql.err.ProgrammingError(1054, "Unknown column 'bogus'")
+        return iter([SQLResult(status='1 row in set')])
+
+    cli = make_repl_cli(SimpleNamespace(dbname='db', connection_id=0, run=run))
+    cli.destructive_warning = True
+    history = RecordingAtuinHistory()
+
+    run_main_repl_with_atuin(monkeypatch, cli, history, ['select 1', 'select bogus', '\\clip select 1', 'drop table t'])
+
+    # success, failure, \clip (a success that never reaches query_history), declined, then \q.
+    assert history.finished == [0, 1, 0, 1, 0]
+    assert 'Wise choice!' in cli.echo_calls
+
+
+def test_main_repl_survives_ctrl_c_during_history_bookkeeping(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_repl_runtime_defaults(monkeypatch)
+    cli = make_repl_cli(SimpleNamespace(dbname='db', connection_id=0, run=lambda text: iter([SQLResult(status='ok')])))
+    cli.verbosity = 0
+    history = RecordingAtuinHistory(interrupt=True)
+
+    try:
+        run_main_repl_with_atuin(monkeypatch, cli, history, ['select 1', 'select 2'])
+    except KeyboardInterrupt:
+        pytest.fail('a Ctrl-C during history bookkeeping ended the session')
+
+    assert history.finished == [0, 0, 0]
+    assert cli.echo_calls[-1] == 'Goodbye!'
+
+
+def test_main_repl_shows_the_atuin_fallback_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_repl_runtime_defaults(monkeypatch)
+    cli = make_repl_cli(SimpleNamespace(dbname='db', connection_id=0, run=lambda text: iter([SQLResult(status='ok')])))
+    history = RecordingAtuinHistory(warnings=['Warning: atuin could not store the query'])
+
+    run_main_repl_with_atuin(monkeypatch, cli, history, ['select 1', 'select 2'])
+
+    assert cli.echo_calls.count('Warning: atuin could not store the query') == 1
 
 
 def test_one_iteration_reregisters_favorite_commands_after_save_and_delete(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2383,3 +2428,139 @@ def test_one_iteration_reregisters_favorite_commands_after_save_and_delete(monke
         repl_mode._one_iteration(cli, repl_mode.ReplState(), text)
 
     assert registrations == [True, True]
+
+
+@pytest.mark.parametrize(('grid_output', 'expected'), [(True, 80), (False, None)])
+def test_output_results_lays_out_a_grid_only_when_grid_output_is_on(
+    monkeypatch: pytest.MonkeyPatch, grid_output: bool, expected: int | None
+) -> None:
+    cli = make_repl_cli(SimpleNamespace())
+    cli.grid_output = grid_output
+    cli.prompt_session = FakePromptSession(columns=80)
+    grid_widths: list[int | None] = []
+
+    def format_sqlresult(result: SQLResult, **kwargs: Any) -> Iterator[str]:
+        grid_widths.append(kwargs['grid_width'])
+        return iter(['row'])
+
+    cli.format_sqlresult = format_sqlresult
+    patch_single_paged_output_runtime(monkeypatch)
+    monkeypatch.setattr(repl_mode.special, 'is_redirected', lambda: False)
+
+    repl_mode._output_results(cli, repl_mode.ReplState(), iter([SQLResult(header=['Database'], rows=[('a',)])]), 0.0)
+    list(repl_mode._single_paged_output_results(cli, repl_mode.ReplState(), iter([SQLResult(header=['Database'], rows=[('a',)])]), 0.0))
+
+    assert grid_widths == [expected, expected]
+
+
+def test_grid_output_is_read_from_main_and_on_by_default(tmp_path: Any) -> None:
+    from configobj import ConfigObj
+
+    from mycli.main import MyCli
+
+    shipped = ConfigObj(os.path.join(os.path.dirname(repl_mode.__file__), '..', 'myclirc'), interpolation=False, list_values=True)
+    assert shipped['main'].as_bool('grid_output') is True
+
+    myclirc = tmp_path / 'myclirc'
+    myclirc.write_text('[main]\ngrid_output = False\nlog_file = /dev/null\n', encoding='utf-8')
+    assert MyCli(myclirc=str(myclirc)).grid_output is False
+
+
+@pytest.mark.usefixtures('restore_last_result')
+def test_last_result_keeps_the_column_description(monkeypatch: pytest.MonkeyPatch) -> None:
+    cursor = make_fetched_cursor([(1,), (2,)])
+
+    repl_mode.capture_last_result(SQLResult(header=['id'], rows=cursor, status='2 rows in set'), DummyLogger())
+
+    (result,) = iocommands.show_last_result()
+    assert result.rows == [(1,), (2,)]
+    assert result.description == cursor.description
+
+
+@pytest.mark.usefixtures('restore_last_result')
+def test_last_result_over_the_row_cap_is_not_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(repl_mode, 'LAST_RESULT_MAX_ROWS', 2)
+    repl_mode.capture_last_result(SQLResult(header=['id'], rows=make_fetched_cursor([(1,)]), status='1 row in set'), DummyLogger())
+
+    cursor = make_fetched_cursor([(1,), (2,), (3,)])
+    repl_mode.capture_last_result(SQLResult(header=['id'], rows=cursor, status='3 rows in set'), DummyLogger())
+
+    assert repl_mode.special.get_last_result() == (None, None)
+    assert 'more than 2 rows' in str(iocommands.show_last_result()[0].status)
+    assert 'more than 2 rows' in str(iocommands.copy_last_result()[0].status)
+    assert list(cursor) == [(1,), (2,), (3,)]  # the output still gets every row
+
+
+class FakeUnbufferedCursor(pymysql.cursors.SSCursor):
+    """An SSCursor's rows can be read once only, and it cannot scroll back."""
+
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._pending = list(rows)
+        self.rowcount = -1
+        self.description = (('id', 3, None, None, None, None, None),)
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        rows, self._pending = self._pending, []
+        return rows
+
+    def scroll(self, value: int, mode: str = 'relative') -> None:
+        raise pymysql.err.NotSupportedError('backwards scrolling not supported by this cursor')
+
+    def __iter__(self) -> Iterator[tuple[Any, ...]]:
+        return iter(self.fetchall())
+
+    def __del__(self) -> None:
+        pass  # SSCursor's would close a connection this fake does not have.
+
+
+@pytest.mark.usefixtures('restore_last_result')
+def test_unbuffered_results_are_not_captured_so_every_row_is_printed(monkeypatch: pytest.MonkeyPatch) -> None:
+    cli = make_repl_cli(SimpleNamespace())
+    printed: list[Any] = []
+
+    def format_sqlresult(result: SQLResult, **kwargs: Any) -> Iterator[str]:
+        printed.extend(result.rows or [])
+        return iter(['row'])
+
+    cli.format_sqlresult = format_sqlresult
+    patch_single_paged_output_runtime(monkeypatch)
+    monkeypatch.setattr(repl_mode.special, 'is_redirected', lambda: False)
+    repl_mode.special.store_last_result(['old'], [('stale',)])
+    cursor = FakeUnbufferedCursor([(1,), (2,), (3,)])
+
+    repl_mode._output_results(cli, repl_mode.ReplState(), iter([SQLResult(header=['id'], rows=cursor, status='')]), 0.0)
+
+    assert printed == [(1,), (2,), (3,)]
+    # Nor does \last pass off the previous result as this one.
+    assert repl_mode.special.get_last_result() == (None, None)
+    assert 'unbuffered' in str(iocommands.show_last_result()[0].status)
+
+
+@pytest.mark.usefixtures('restore_last_result')
+def test_a_failed_query_marks_the_last_result_stale(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_repl_runtime_defaults(monkeypatch)
+
+    def run(text: str) -> Iterator[SQLResult]:
+        raise pymysql.err.ProgrammingError(1146, "Table 'db.nope' doesn't exist")
+
+    cli = make_repl_cli(SimpleNamespace(dbname='db', connection_id=0, run=run))
+    repl_mode.special.store_last_result(['id'], [(1,)])
+
+    assert repl_mode._one_iteration(cli, repl_mode.ReplState(), 'select * from nope') is False
+
+    assert repl_mode.special.get_last_result() == (None, None)
+    assert iocommands.show_last_result()[0].status == 'No result: the last query failed.'
+    assert iocommands.copy_last_result()[0].status == 'No result to copy: the last query failed.'
+
+
+@pytest.mark.usefixtures('restore_last_result')
+def test_a_declined_query_leaves_the_last_result_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_repl_runtime_defaults(monkeypatch)
+    monkeypatch.setattr(repl_mode, 'confirm_destructive_query', lambda keywords, text: False)
+    cli = make_repl_cli(SimpleNamespace(dbname='db', connection_id=0, run=lambda text: iter([])))
+    cli.destructive_warning = True
+    repl_mode.special.store_last_result(['id'], [(1,)])
+
+    repl_mode._one_iteration(cli, repl_mode.ReplState(), 'drop table t')
+
+    assert repl_mode.special.get_last_result() == (['id'], [(1,)])

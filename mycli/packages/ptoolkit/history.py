@@ -14,7 +14,8 @@ from sqlglot import Token, TokenType, tokenize
 from sqlglot.errors import TokenError
 
 from mycli.packages.ptoolkit import atuin
-from mycli.packages.sql_utils import is_password_change
+from mycli.packages.special import split_queries
+from mycli.packages.sql_utils import has_credentials, is_password_change
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,11 @@ def _frecency_tokens(text: str) -> tuple[str, ...]:
     except TokenError:
         return ()
     return tuple(normalized for token in tokens if (normalized := _normalize_frecency_token(token)))
+
+
+def keep_out_of_history(text: str) -> bool:
+    """Return True if any statement in the line could carry a password."""
+    return is_password_change(text) or any(has_credentials(statement) for statement in split_queries(text))
 
 
 def frecency_score(text: str, frecency: Mapping[str, float]) -> float:
@@ -153,7 +159,7 @@ class FileHistoryWithTimestamp(FileHistory):
     def append_string(self, string: str) -> None:
         "Add string to the history."
         self._loaded_strings.insert(0, string)
-        if is_password_change(string):
+        if keep_out_of_history(string):
             return
         self.store_string(string)
         if not self.frecency_history_entries or not self.frecency_refresh_interval:
@@ -206,7 +212,7 @@ class AtuinHistory(FileHistoryWithTimestamp):
 
     Subclasses :class:`FileHistoryWithTimestamp` rather than
     :class:`~prompt_toolkit.history.History` so that everything keyed off that
-    type keeps working: frecency refresh, the ``is_password_change`` filter in
+    type keeps working: frecency refresh, the ``keep_out_of_history`` filter in
     :meth:`FileHistoryWithTimestamp.append_string`, the fzf reverse search, and
     the ``\\#`` rehash hook.
 
@@ -238,6 +244,10 @@ class AtuinHistory(FileHistoryWithTimestamp):
     * An entry only reaches the record store (``records = true``, and so sync)
       once ``history end`` runs. The line is stored on accept, before the query
       runs, so :meth:`finish` ends it once the REPL knows the outcome.
+      ``history end`` syncs, so it is not waited for.
+
+    If ``history start`` fails, the line goes to ``filename`` instead, and
+    :meth:`take_warning` reports that once per session.
     """
 
     #: atuin is a local sqlite read; this only guards against a wedged process.
@@ -250,6 +260,8 @@ class AtuinHistory(FileHistoryWithTimestamp):
         self.limit = limit
         #: (atuin history id, start in ns) of the entry awaiting `history end`.
         self._pending: tuple[str, int] | None = None
+        self._warning: str | None = None
+        self._warned = False
         super().__init__(filename, **kwargs)
 
     def _atuin(self, *args: str, env: Mapping[str, str] | None = None) -> str | None:
@@ -293,10 +305,12 @@ class AtuinHistory(FileHistoryWithTimestamp):
         return entries
 
     def store_string(self, string: str) -> None:
-        # append_string() has already dropped password changes and updated the
-        # frecency counters; only the storage backend differs here.
+        # append_string() has already dropped lines with credentials and updated
+        # the frecency counters; the filter is repeated for any direct caller.
         # A second prompt in one REPL iteration (\e, \llm) supersedes the first.
         self.finish(0)
+        if keep_out_of_history(string):
+            return
         history_id = self._atuin(
             'history',
             'start',
@@ -308,6 +322,17 @@ class AtuinHistory(FileHistoryWithTimestamp):
         )
         if history_id and history_id.strip():
             self._pending = (history_id.strip(), time.monotonic_ns())
+            return
+        # Better in the file than nowhere.
+        super().store_string(string)
+        if not self._warned:
+            self._warned = True
+            self._warning = f'Warning: atuin could not store the query; history goes to {os.fsdecode(self.filename)} instead.'
+
+    def take_warning(self) -> str | None:
+        """Return the pending fallback warning, at most once per session."""
+        warning, self._warning = self._warning, None
+        return warning
 
     def finish(self, exit_code: int) -> None:
         """End the entry the last prompt stored, with the query's outcome."""
@@ -315,16 +340,28 @@ class AtuinHistory(FileHistoryWithTimestamp):
             return
         history_id, started = self._pending
         self._pending = None
-        self._atuin(
-            'history',
-            'end',
-            '--exit',
-            str(exit_code),
-            '--duration',
-            str(time.monotonic_ns() - started),
-            '--',
-            history_id,
-        )
+        try:
+            # Not waited for: `history end` syncs, which must not hold up the
+            # prompt. Its own session, so a Ctrl-C at the prompt cannot cut it short.
+            subprocess.Popen(
+                (
+                    'atuin',
+                    'history',
+                    'end',
+                    '--exit',
+                    str(exit_code),
+                    '--duration',
+                    str(time.monotonic_ns() - started),
+                    '--',
+                    history_id,
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.debug('atuin history end failed: %s', e)
 
     def load_history_with_timestamp(self) -> list[tuple[str, str]]:
         records = self._search(self._FORMAT)

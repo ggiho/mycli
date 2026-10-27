@@ -757,3 +757,41 @@ def test_get_reserved_space_caps_ratio(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, 'get_terminal_size', lambda *args, **kwargs: (120, 40))
 
     assert OutputMixin.get_reserved_space(cli) == 8
+
+
+@pytest.mark.parametrize(
+    'values',
+    [
+        ['', 'b'],  # an empty cell is invisible
+        [' a', 'b'],  # leading blank
+        ['a ', 'b'],  # trailing blank
+        ['Kim  Min', 'b'],  # two spaces read as a cell boundary
+        ['a b', 'c'],  # whitespace other than a space
+        ['a\rb', 'c'],
+    ],
+)
+def test_format_as_grid_returns_none_when_cell_boundaries_would_be_ambiguous(values: list[str]) -> None:
+    assert output_module.format_as_grid('h', [(v,) for v in values], 80, '<null>') is None
+
+
+def test_format_as_grid_returns_none_for_an_empty_null_string() -> None:
+    assert output_module.format_as_grid('h', [('a',), (None,)], 80, '') is None
+
+
+def test_format_as_grid_keeps_single_spaces_inside_values() -> None:
+    lines = output_module.format_as_grid('h', [('Kim Min Su',), ('b',)], 80, '<null>')
+    assert lines is not None
+    assert lines[3] == '| Kim Min Su  b |'
+
+
+def test_format_sqlresult_formats_rows_kept_with_a_description_like_the_cursor() -> None:
+    """\\last passes the rows as a list; the description keeps numbers right-aligned."""
+    cli = make_bare_mycli()
+    cli.main_formatter = DummyFormatter()
+    result = SQLResult(header=['id', 'name'], rows=[(1, 'a')], description=(('id', 3), ('name', 253)))
+
+    list(OutputMixin.format_sqlresult(cli, result))
+
+    _, kwargs = cli.main_formatter.calls[-1]
+    assert kwargs['column_types'] == [int, str]
+    assert kwargs['colalign'] == ['right', 'left']

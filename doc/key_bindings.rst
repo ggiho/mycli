@@ -31,6 +31,28 @@ F4
 Toggle between Vi and Emacs mode.
 
 ###
+F5
+###
+
+Show the ``EXPLAIN`` plan of the statement under the cursor, without running it or leaving the buffer.
+
+In the blanks between statements, the cursor belongs to the statement before it. Only statements ``EXPLAIN``
+accepts are explained (``SELECT``, ``INSERT``, ``UPDATE``, ``DELETE``, ``REPLACE``, ``TABLE`` and ``WITH``), and a
+statement holding a ``/*! ... */`` comment is refused, since MySQL runs what that holds.
+
+MySQL can execute a derived table or a subquery while planning, so a preview can take as long as that part of
+the query. Ctrl-C cancels it, keeping the buffer and the connection.
+
+##
+Up
+##
+
+With ``atuin_history`` and ``atuin_keys`` both on, open atuin's search, seeded with the buffer, as ``atuin init zsh``
+binds it. Tab puts the pick in the buffer for editing; Enter does too, or runs it when atuin's ``enter_accept`` is
+set. The search only covers what mycli stored in atuin; Ctrl-R stays on fzf. Up still moves through a multi-line
+buffer and the completion menu, and falls back to the previous history entry if atuin cannot be run.
+
+###
 Tab
 ###
 

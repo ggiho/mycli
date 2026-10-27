@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, cast
 
 import prompt_toolkit
+from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.key_binding.key_processor import KeyPressEvent
 from prompt_toolkit.keys import Keys
@@ -80,6 +81,10 @@ class DummyBuffer:
 
     def validate_and_handle(self) -> None:
         self.validate_calls += 1
+
+    @property
+    def document(self) -> Document:
+        return Document(self.text)
 
 
 @dataclass
@@ -733,3 +738,32 @@ def test_bracketed_paste_binding_overrides_prompt_toolkit_default() -> None:
             multiline=False,
         )
         assert session.prompt() == 'id  INT'
+
+
+def test_bracketed_paste_into_an_open_literal_keeps_it_byte_for_byte() -> None:
+    mycli = DummyMyCli(DummyKeysConfig())
+    kb = key_bindings.mycli_bindings(mycli)
+    event = make_event(DummyBuffer(text="SELECT * FROM t WHERE name = '"))
+    event.data = "Kim Min Su'"
+
+    binding_handler(kb, Keys.BracketedPaste)(event)
+
+    assert event.current_buffer.inserted_text == ["Kim Min Su'"]
+
+
+def test_bracketed_paste_uses_the_text_before_the_cursor_only() -> None:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput as PtkDummyOutput
+
+    mycli = DummyMyCli(DummyKeysConfig())
+    with create_pipe_input() as pipe:
+        # Type `x = ''`, step back into the quotes, paste, accept.
+        pipe.send_text("x = ''\x1b[D\x1b[200~a b\x1b[201~\r")
+        session: PromptSession = PromptSession(
+            input=pipe,
+            output=PtkDummyOutput(),
+            key_bindings=key_bindings.mycli_bindings(mycli),
+            multiline=False,
+        )
+        assert session.prompt() == "x = 'a b'"

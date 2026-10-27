@@ -1,6 +1,8 @@
+import copy
 from functools import partial
 import logging
 import re
+import threading
 import webbrowser
 
 import click
@@ -34,15 +36,16 @@ from mycli.packages.whitespace import strip_invisible_outside_literals
 _logger = logging.getLogger(__name__)
 
 
-def normalize_pasted_text(data: str) -> str:
+def normalize_pasted_text(data: str, before: str = '') -> str:
     """Turn a clipboard payload into text MySQL can parse.
 
     Only invisible characters outside quoted literals are touched; nothing
-    visible is rewritten.
+    visible is rewritten. `before` is the buffer up to the cursor, so a paste
+    into an open literal or comment is treated as part of it.
     """
     # prompt_toolkit's own paste handler does this, and overriding it drops it.
     data = data.replace('\r\n', '\n').replace('\r', '\n')
-    return strip_invisible_outside_literals(data)
+    return strip_invisible_outside_literals(data, before)
 
 
 @Condition
@@ -84,23 +87,41 @@ def edit_and_execute(event: KeyPressEvent) -> None:
     buff.open_in_editor(validate_and_handle=False)
 
 
-# Statements EXPLAIN accepts that it only plans and never runs. EXPLAIN ANALYZE
-# does run the statement, and is excluded by not allowing a leading EXPLAIN.
+# Statements EXPLAIN accepts. EXPLAIN plans these without running them, except
+# that MySQL may execute a derived table or subquery while planning, so
+# `EXPLAIN SELECT * FROM (SELECT SLEEP(2)) d` takes two seconds; that is why the
+# preview can be cancelled with Ctrl-C. EXPLAIN ANALYZE runs the whole statement,
+# and is excluded by not allowing a leading EXPLAIN.
 EXPLAINABLE_KEYWORDS = frozenset({'select', 'insert', 'update', 'delete', 'replace', 'table', 'with'})
+
+#: Set while the F5 EXPLAIN has the connection, on an executor thread.
+EXPLAIN_RUNNING = threading.Event()
 
 
 def explainable_statement(text: str, cursor_position: int) -> str | None:
     """Return the statement under the cursor if EXPLAIN can take it, else None.
 
-    Comments are dropped (optimizer hints are kept), so what gets explained is
-    exactly what was checked here.
+    The cursor belongs to the statement it is on, or, in the blanks between
+    statements, to the one before. Comments are dropped (optimizer hints are
+    kept), so what gets explained is exactly what was checked here; a statement
+    with a `/*! ... */` comment is refused, since MySQL runs what that holds.
     """
-    statements = list(special.split_queries(text))
+    statements = []
+    position = 0
+    for statement in special.split_queries(text):
+        start = text.find(statement, position)
+        if start == -1:
+            # A DELIMITER command re-joins the statements, so they no longer map back.
+            return None
+        position = start + len(statement)
+        if statement.strip():
+            statements.append((start, statement))
     if not statements:
         return None
-    # Each statement that ends before the cursor shifts it one along.
-    index = max(len(list(special.split_queries(text[:cursor_position]))) - 1, 0)
-    sql = statements[min(index, len(statements) - 1)]
+    index = max(sum(1 for start, _ in statements if start <= cursor_position) - 1, 0)
+    sql = statements[index][1]
+    if '/*!' in sql:
+        return None
     sql = sqlparse.format(sql, strip_comments=True).strip().rstrip(';').strip()
     sql = re.sub(r'\\[Ggx]$', '', sql).strip()
     # With a custom delimiter one "statement" can still hold a `;`.
@@ -114,9 +135,11 @@ def explainable_statement(text: str, cursor_position: int) -> str | None:
 def _run_explain(mycli, sql: str) -> None:
     """Run EXPLAIN for one statement and print a small preview.
 
-    Called through run_in_terminal, so it runs on the main thread with the
-    prompt out of the way. The statement goes straight to a cursor: never
-    through SQLExecute.run(), which would split it and dispatch special commands.
+    Called through run_in_terminal on an executor thread: the prompt is out of
+    the way, so nothing else uses the connection, and the event loop stays free
+    to turn a Ctrl-C into <sigint>, which _cancel_explain() handles. The
+    statement goes straight to a cursor: never through SQLExecute.run(), which
+    would split it and dispatch special commands.
     """
     try:
         with mycli.sqlexecute.conn.cursor() as cur:
@@ -126,6 +149,8 @@ def _run_explain(mycli, sql: str) -> None:
     except Exception as e:
         _logger.debug('EXPLAIN preview failed: %r', e)
         return
+    finally:
+        EXPLAIN_RUNNING.clear()
     if not header or not rows:
         return
     widths = [len(h) for h in header]
@@ -138,6 +163,31 @@ def _run_explain(mycli, sql: str) -> None:
     for row in rows:
         click.echo(' | '.join(v.ljust(widths[i]) for i, v in enumerate(row)))
     click.echo('---')
+
+
+def _cancel_explain(sqlexecute) -> None:
+    """Stop the running F5 EXPLAIN, as mycli cancels a query on Ctrl-C.
+
+    KILL QUERY goes over a second, short-lived connection, so the one the
+    EXPLAIN runs on (and its session: transaction, variables, temporary tables)
+    survives, and only gets "Query execution was interrupted".
+    """
+    connection_id = sqlexecute.connection_id or 0
+    if connection_id <= 0:
+        click.secho('Did not get a connection id, skip cancelling query', err=True, fg='red')
+        return
+    side = copy.copy(sqlexecute)
+    side.conn = None
+    try:
+        side.connect()
+        with side.conn.cursor() as cur:
+            cur.execute(f'KILL QUERY {connection_id}')
+        click.secho(f'Cancelled query id: {connection_id}', err=True, fg='blue')
+    except Exception as e:
+        click.secho(f'Encountered error while cancelling query: {e}', err=True, fg='red')
+    finally:
+        if side.conn is not None:
+            side.conn.close()
 
 
 def mycli_bindings(mycli) -> KeyBindings:
@@ -168,7 +218,13 @@ def mycli_bindings(mycli) -> KeyBindings:
         buffer = event.app.current_buffer
         sql = explainable_statement(buffer.text, buffer.cursor_position)
         if sql is not None:
-            run_in_terminal(partial(_run_explain, mycli, sql))
+            EXPLAIN_RUNNING.set()
+            run_in_terminal(partial(_run_explain, mycli, sql), in_executor=True)
+
+    @kb.add(Keys.SIGINT, filter=Condition(EXPLAIN_RUNNING.is_set))
+    def _(event: KeyPressEvent) -> None:
+        """Ctrl-C during the F5 preview cancels the EXPLAIN and keeps the buffer."""
+        _cancel_explain(mycli.sqlexecute)
 
     # Registered only when enabled, so the default Up binding is untouched
     # otherwise. ~shift_selection_mode leaves shift-selection to prompt_toolkit,
@@ -453,6 +509,7 @@ def mycli_bindings(mycli) -> KeyBindings:
     @kb.add(Keys.BracketedPaste)
     def _(event: KeyPressEvent) -> None:
         """Paste, dropping the invisible characters rich-text apps inject."""
-        event.current_buffer.insert_text(normalize_pasted_text(event.data))
+        buffer = event.current_buffer
+        buffer.insert_text(normalize_pasted_text(event.data, buffer.document.text_before_cursor))
 
     return kb

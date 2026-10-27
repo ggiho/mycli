@@ -18,6 +18,8 @@ class SQLResult:
     image: bytes | None = None
     image_protocol: ImageProtocol = 'none'
     is_error: bool = False
+    #: Cursor description for `rows` that are a list, so the column types survive.
+    description: tuple | None = None
 
     def __str__(self):
         image = f'<{len(self.image)} bytes>' if self.image is not None else None

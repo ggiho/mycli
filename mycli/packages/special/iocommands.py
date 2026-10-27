@@ -87,13 +87,26 @@ def is_pager_enabled() -> bool:
 
 LAST_RESULT_HEADER: list[str] | None = None
 LAST_RESULT_ROWS: list[tuple] | None = None
+#: The cursor description of the stored rows, for numeric alignment.
+LAST_RESULT_DESCRIPTION: tuple | None = None
+#: Why there is no stored result, when there is a reason to give.
+LAST_RESULT_MISSING_REASON: str | None = None
 
 
-def store_last_result(header: list[str] | None, rows: list[tuple] | None) -> None:
+def store_last_result(header: list[str] | None, rows: list[tuple] | None, description: tuple | None = None) -> None:
     """Remember the last SELECT result so \\last and \\copy can reuse it."""
-    global LAST_RESULT_HEADER, LAST_RESULT_ROWS
+    global LAST_RESULT_HEADER, LAST_RESULT_ROWS, LAST_RESULT_DESCRIPTION, LAST_RESULT_MISSING_REASON
     LAST_RESULT_HEADER = header
     LAST_RESULT_ROWS = rows
+    LAST_RESULT_DESCRIPTION = description
+    LAST_RESULT_MISSING_REASON = None
+
+
+def forget_last_result(reason: str) -> None:
+    """Drop the stored result, so \\last and \\copy say `reason` instead of showing an older one."""
+    global LAST_RESULT_MISSING_REASON
+    store_last_result(None, None)
+    LAST_RESULT_MISSING_REASON = reason
 
 
 def get_last_result() -> tuple[list[str] | None, list[tuple] | None]:
@@ -779,8 +792,17 @@ def toggle_favorite_query_display(**_) -> list[SQLResult]:
 def show_last_result(**_) -> list[SQLResult]:
     header, rows = get_last_result()
     if header is None or rows is None:
+        if LAST_RESULT_MISSING_REASON:
+            return [SQLResult(status=f"No result: {LAST_RESULT_MISSING_REASON}.")]
         return [SQLResult(status="No previous result.")]
-    return [SQLResult(rows=list(rows), header=header, status=f"{len(rows)} row(s) from last result")]
+    return [
+        SQLResult(
+            rows=list(rows),
+            header=header,
+            description=LAST_RESULT_DESCRIPTION,
+            status=f"{len(rows)} row(s) from last result",
+        )
+    ]
 
 
 @special_command(
@@ -794,6 +816,8 @@ def show_last_result(**_) -> list[SQLResult]:
 def copy_last_result(**_) -> list[SQLResult]:
     header, rows = get_last_result()
     if header is None or rows is None:
+        if LAST_RESULT_MISSING_REASON:
+            return [SQLResult(status=f"No result to copy: {LAST_RESULT_MISSING_REASON}.")]
         return [SQLResult(status="No previous result to copy.")]
 
     lines = ["\t".join(header)]

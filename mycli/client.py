@@ -173,6 +173,7 @@ class MyCli(AppStateMixin, OutputMixin, ClientCommandsMixin, ClientConnectionMix
 
         # read from cli argument or user config file
         self.auto_vertical_output = auto_vertical_output or c["main"].as_bool("auto_vertical_output")
+        self.grid_output = c['main'].as_bool('grid_output') if 'grid_output' in c['main'] else True
 
         # Write user config if system config wasn't the last config loaded.
         if c.filename not in self.system_config_files and not os.path.exists(myclirc):

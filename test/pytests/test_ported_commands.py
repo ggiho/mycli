@@ -157,8 +157,37 @@ def test_f5_explain_skips_statements_it_cannot_explain(sql):
     assert _explain(sql) == []
 
 
-def test_f5_explain_drops_comments_that_could_hide_a_second_statement():
-    assert _explain('SELECT 1 /*!; DELETE FROM t */ -- x') == ['EXPLAIN SELECT 1']
+def test_f5_explain_drops_comments():
+    assert _explain('SELECT 1 /* x */ -- y') == ['EXPLAIN SELECT 1']
+
+
+@pytest.mark.parametrize('sql', ['SELECT 1 /*!; DELETE FROM t */', 'SELECT /*!80000 SQL_NO_CACHE */ 1', '/*!SELECT 1*/'])
+def test_f5_explain_refuses_executable_comments(sql):
+    """MySQL runs what `/*! */` holds, so stripping it would explain another statement."""
+    assert _explain(sql) == []
+
+
+@pytest.mark.parametrize(
+    ('text', 'cursor_position', 'expected'),
+    [
+        ('SELECT 1;\nSELECT 2;\nSELECT 3', 10, 'EXPLAIN SELECT 2'),  # column 0 of statement 2
+        ('SELECT 1;\nSELECT 2;\nSELECT 3', 20, 'EXPLAIN SELECT 3'),  # column 0 of statement 3
+        ('SELECT 1;\nSELECT 2;\nSELECT 3', 0, 'EXPLAIN SELECT 1'),
+        ('SELECT 1;\nSELECT 2;\nSELECT 3', 8, 'EXPLAIN SELECT 1'),  # on the `;`
+        ('SELECT 1;\nSELECT 2;\nSELECT 3', 9, 'EXPLAIN SELECT 1'),  # in the line break after it
+        ('SELECT 1;\nSELECT 2;\nSELECT 3', 28, 'EXPLAIN SELECT 3'),  # end of buffer
+        ('select 1;select 2', 9, 'EXPLAIN select 2'),
+        ('select 1;select 2', 8, 'EXPLAIN select 1'),
+        ('select 1;select 2', 17, 'EXPLAIN select 2'),
+        ('SELECT 1;   \n\n  SELECT 2', 12, 'EXPLAIN SELECT 1'),  # blanks between
+        ('SELECT 1;   \n\n  SELECT 2', 16, 'EXPLAIN SELECT 2'),
+        ('SELECT 1;;SELECT 2', 8, 'EXPLAIN SELECT 1'),  # an empty statement is skipped
+        ('SELECT 1;\nSELECT 2;', 19, 'EXPLAIN SELECT 2'),  # end, after the last `;`
+        ('  SELECT 1', 0, 'EXPLAIN SELECT 1'),
+    ],
+)
+def test_f5_cursor_picks_the_statement_it_is_on(text, cursor_position, expected):
+    assert _explain(text, cursor_position) == [expected]
 
 
 def test_f5_explain_accepts_ctes_and_strips_terminators():
@@ -177,7 +206,20 @@ def test_f5_explain_renders_nulls_and_survives_errors(capsys):
     assert _explain('SELECT 1', error=RuntimeError('boom')) == ['EXPLAIN SELECT 1']  # must not raise
 
 
-def test_f5_binding_runs_the_preview_in_the_terminal_not_on_a_thread(monkeypatch):
+def _f5_bindings(mycli):
+    from types import SimpleNamespace
+
+    from mycli import key_bindings
+
+    stub = SimpleNamespace(config={}, sqlexecute=mycli.sqlexecute)
+    bindings = key_bindings.mycli_bindings(stub).bindings
+    f5 = next(b for b in bindings if [str(k) for k in b.keys] == ['Keys.F5'])
+    sigint = next(b for b in bindings if [str(k) for k in b.keys] == ['Keys.SIGINT'])
+    return f5, sigint
+
+
+def test_f5_binding_runs_the_preview_in_the_terminal_on_an_executor(monkeypatch):
+    """In the terminal, so the prompt is out of the way; on an executor, so Ctrl-C reaches the event loop."""
     from types import SimpleNamespace
 
     from prompt_toolkit.document import Document
@@ -185,101 +227,86 @@ def test_f5_binding_runs_the_preview_in_the_terminal_not_on_a_thread(monkeypatch
     from mycli import key_bindings
 
     scheduled = []
-    monkeypatch.setattr(key_bindings, 'run_in_terminal', scheduled.append)
+    monkeypatch.setattr(key_bindings, 'run_in_terminal', lambda func, **kwargs: scheduled.append((func, kwargs)))
     mycli = FakeMycli()
-    stub = SimpleNamespace(config={}, sqlexecute=mycli.sqlexecute)
-    binding = next(b for b in key_bindings.mycli_bindings(stub).bindings if [str(k) for k in b.keys] == ['Keys.F5'])
+    f5, sigint = _f5_bindings(mycli)
     buffer = SimpleNamespace(document=Document('SELECT 1; DELETE FROM t', 3))
     buffer.text, buffer.cursor_position = buffer.document.text, buffer.document.cursor_position
 
-    binding.handler(SimpleNamespace(app=SimpleNamespace(current_buffer=buffer)))
+    assert not sigint.filter()  # Ctrl-C keeps its usual meaning until F5
+    f5.handler(SimpleNamespace(app=SimpleNamespace(current_buffer=buffer)))
 
     assert len(scheduled) == 1
+    func, kwargs = scheduled[0]
+    assert kwargs == {'in_executor': True}
     assert mycli.sqlexecute.conn.executed == []  # nothing ran until the terminal is free
-    scheduled[0]()
+    assert sigint.filter()  # Ctrl-C now cancels the EXPLAIN instead of clearing the buffer
+    func()
     assert mycli.sqlexecute.conn.executed == ['EXPLAIN SELECT 1']
+    assert not sigint.filter()
 
 
-def make_cursor(rows, description=(('a', 3, None, None, None, None, None),), warning_count=0, cursor_class=None):
-    """A real pymysql cursor holding a fetched result, without a server."""
-    from pymysql.cursors import Cursor
+class FakeSideConnection:
+    def __init__(self, log):
+        self.log = log
 
-    cursor = (cursor_class or Cursor)(None)
-    cursor._executed = 'SELECT'
-    cursor._rows = tuple(rows)
-    cursor.rownumber = 0
-    cursor.rowcount = len(rows)
-    cursor.description = description
-    cursor.warning_count = warning_count
-    return cursor
+    def cursor(self):
+        return FakeExplainCursor(self)
 
+    @property
+    def executed(self):
+        return self.log
 
-def test_capture_stores_result_sets_despite_the_status_wording():
-    """The status for a result set is "N rows in set", so is_select() is False.
+    error = None
+    header: list = []
 
-    Keying the capture off is_select() silently stored nothing; this pins it.
-    """
-    from mycli.main_modes.repl import capture_last_result
-    from mycli.packages.sqlresult import SQLResult
-
-    cursor = make_cursor([(1,), (2,)], warning_count=1)
-    result = SQLResult(header=['a'], rows=cursor, status='2 rows in set')
-    capture_last_result(result, __import__('logging').getLogger('test'))
-
-    assert get_last_result() == (['a'], [(1,), (2,)])
-    # The formatter and the warnings check still get the cursor, rewound.
-    assert result.rows is cursor
-    assert cursor.warning_count == 1
-    assert list(cursor) == [(1,), (2,)]
+    def close(self):
+        self.log.append('close')
 
 
-def test_numeric_column_stays_right_aligned_after_capture():
-    from mycli.main_modes.repl import capture_last_result
-    from mycli.output import OutputMixin
-    from mycli.packages.sqlresult import SQLResult
-    from test.utils import make_bare_mycli
+class FakeSQLExecute:
+    def __init__(self, connection_id=42, connect_error=None):
+        self.connection_id = connection_id
+        self.connect_error = connect_error
+        self.conn = 'the session connection'
+        self.side_log: list[str] = []
 
-    description = (('id', 3, None, None, None, None, None), ('name', 253, None, None, None, None, None))
-    result = SQLResult(header=['id', 'name'], rows=make_cursor([(1, 'x'), (22, 'y')], description), status='2 rows in set')
-    capture_last_result(result, __import__('logging').getLogger('test'))
-
-    cli = make_bare_mycli()
-    list(OutputMixin.format_sqlresult(cli, result, numeric_alignment='right'))
-
-    (rows, _header, _format_name), kwargs = cli.main_formatter.calls[-1]
-    assert kwargs['colalign'] == ['right', 'left']
-    assert list(rows) == [(1, 'x'), (22, 'y')]
+    def connect(self):
+        if self.connect_error:
+            raise self.connect_error
+        self.conn = FakeSideConnection(self.side_log)
 
 
-def test_capture_skips_unbuffered_cursors():
-    """An SSCursor cannot rewind, and copying it would defeat --unbuffered."""
-    from pymysql.cursors import SSCursor
+def test_ctrl_c_during_f5_kills_the_query_from_a_second_connection(capsys):
+    from mycli.key_bindings import _cancel_explain
 
-    from mycli.main_modes.repl import capture_last_result
-    from mycli.packages.sqlresult import SQLResult
+    sqlexecute = FakeSQLExecute()
+    _cancel_explain(sqlexecute)
 
-    cursor = make_cursor([(1,)], cursor_class=SSCursor)
-    capture_last_result(SQLResult(header=['a'], rows=cursor), __import__('logging').getLogger('test'))
-
-    assert get_last_result() == (None, None)
-
-
-def test_capture_of_an_empty_result_set():
-    from mycli.main_modes.repl import capture_last_result
-    from mycli.packages.sqlresult import SQLResult
-
-    capture_last_result(SQLResult(header=['a'], rows=make_cursor([])), __import__('logging').getLogger('test'))
-
-    assert get_last_result() == (['a'], [])
+    assert sqlexecute.side_log == ['KILL QUERY 42', 'close']
+    # The session's own connection is left alone, so it stays usable.
+    assert sqlexecute.conn == 'the session connection'
+    assert 'Cancelled query id: 42' in capsys.readouterr().err
 
 
-def test_capture_ignores_results_without_a_row_set():
-    from mycli.main_modes.repl import capture_last_result
-    from mycli.packages.sqlresult import SQLResult
+def test_ctrl_c_during_f5_reports_what_it_could_not_cancel(capsys):
+    from mycli.key_bindings import _cancel_explain
 
-    logger = __import__('logging').getLogger('test')
-    capture_last_result(SQLResult(status='Query OK, 1 row affected'), logger)
-    assert get_last_result() == (None, None)
-    # Already-materialised rows (e.g. from \last itself) must not overwrite.
-    capture_last_result(SQLResult(header=['a'], rows=[(9,)], status='1 row in set'), logger)
-    assert get_last_result() == (None, None)
+    _cancel_explain(FakeSQLExecute(connection_id=0))
+    assert 'skip cancelling' in capsys.readouterr().err
+
+    sqlexecute = FakeSQLExecute(connect_error=OSError('refused'))
+    _cancel_explain(sqlexecute)
+    assert 'refused' in capsys.readouterr().err
+    assert sqlexecute.conn == 'the session connection'
+
+
+def test_an_interrupted_f5_explain_prints_nothing_and_clears_the_flag(capsys):
+    import pymysql
+
+    from mycli import key_bindings
+
+    key_bindings.EXPLAIN_RUNNING.set()
+    _explain('SELECT 1', error=pymysql.err.OperationalError(1317, 'Query execution was interrupted'))
+    assert not key_bindings.EXPLAIN_RUNNING.is_set()
+    assert 'EXPLAIN Preview' not in capsys.readouterr().out

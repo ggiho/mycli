@@ -33,12 +33,21 @@ class FakeAtuin:
         out = self.formatted if ('--format' in argv and self.formatted is not None) else self.stdout
         return subprocess.CompletedProcess(argv, self.returncode, stdout=out, stderr=self.stderr)
 
+    def popen(self, argv, **kwargs):
+        """`history end` is started, not run: record it, but return nothing to wait on."""
+        self.calls.append(list(argv))
+        self.popen_kwargs = kwargs
+        if self.raises:
+            raise self.raises
+        return None
+
 
 @pytest.fixture
 def fake_atuin(monkeypatch):
     def install(**kwargs):
         fake = FakeAtuin(**kwargs)
         monkeypatch.setattr(subprocess, 'run', fake)
+        monkeypatch.setattr(subprocess, 'Popen', fake.popen)
         return fake
 
     return install
@@ -161,7 +170,7 @@ def test_a_failed_start_is_not_ended(fake_atuin, history):
 
 
 def test_password_changes_are_not_sent_to_atuin(fake_atuin, history):
-    """append_string() inherits upstream's is_password_change filter."""
+    """append_string() inherits the keep_out_of_history filter."""
     fake = fake_atuin(stdout='id\n')
     h = history()
     h.append_string("ALTER USER 'bob' IDENTIFIED BY 'Secret1!'")
@@ -199,12 +208,14 @@ def test_record_without_separator_is_kept_as_a_command(fake_atuin, history):
     assert history().load_history_with_timestamp() == [('SELECT 1', '')]
 
 
-def test_survives_a_missing_or_wedged_executable(fake_atuin, history):
+def test_survives_a_missing_or_wedged_executable(fake_atuin, history, tmp_path):
     for boom in (FileNotFoundError('atuin'), subprocess.TimeoutExpired('atuin', 5)):
+        (tmp_path / 'hist').unlink(missing_ok=True)
         fake_atuin(raises=boom)
         h = history()
         assert list(h.load_history_strings()) == []
         h.store_string('SELECT 1')  # must not raise
+        h.finish(0)  # nothing pending: must not raise either
 
 
 class FakeBuffer:
@@ -355,3 +366,116 @@ def test_binding_construction_tolerates_a_config_without_main():
 def test_timestamped_history_is_newest_first(fake_atuin, history):
     fake_atuin(stdout='', formatted='2026-01-01 00:00:00\told\x002026-01-02 00:00:00\tnew\x00')
     assert [command for command, _ in history().load_history_with_timestamp()] == ['new', 'old']
+
+
+def test_finish_does_not_wait_for_history_end(fake_atuin, history):
+    """`history end` syncs; waiting for it held up the prompt and let Ctrl-C quit mycli."""
+    fake = fake_atuin(stdout='id\n')
+    h = history()
+    h.store_string('SELECT 1')
+    h.finish(0)
+
+    assert fake.calls[-1][:3] == ['atuin', 'history', 'end']
+    assert fake.popen_kwargs == {
+        'stdin': subprocess.DEVNULL,
+        'stdout': subprocess.DEVNULL,
+        'stderr': subprocess.DEVNULL,
+        'start_new_session': True,
+    }
+
+
+def test_finish_survives_a_missing_executable(fake_atuin, history, monkeypatch):
+    fake_atuin(stdout='id\n')
+    h = history()
+    h.store_string('SELECT 1')
+
+    def boom(argv, **kwargs):
+        raise FileNotFoundError('atuin')
+
+    monkeypatch.setattr(subprocess, 'Popen', boom)
+    h.finish(0)  # must not raise
+
+
+@pytest.mark.parametrize(
+    'failure',
+    [
+        {'returncode': 1, 'stderr': 'database is locked'},
+        {'raises': subprocess.TimeoutExpired('atuin', 5)},
+        {'raises': PermissionError('atuin')},
+        {'stdout': '\n'},
+    ],
+)
+def test_a_failed_start_stores_the_query_in_the_file_and_warns_once(fake_atuin, history, tmp_path, failure):
+    fake_atuin(**failure)
+    h = history()
+    h.store_string('SELECT 1')
+    h.store_string('SELECT 2')
+
+    text = (tmp_path / 'hist').read_text(encoding='utf-8')
+    assert '+SELECT 1\n' in text and '+SELECT 2\n' in text
+    warning = h.take_warning()
+    assert warning is not None and str(tmp_path / 'hist') in warning
+    assert '\n' not in warning
+    assert h.take_warning() is None
+
+
+def test_a_working_start_writes_nothing_to_the_file(fake_atuin, history, tmp_path):
+    fake_atuin(stdout='id\n')
+    h = history()
+    h.store_string('SELECT 1')
+    assert not (tmp_path / 'hist').exists()
+    assert h.take_warning() is None
+
+
+SECRET_LINES = [
+    "CREATE USER 'bob'@'%' IDENTIFIED BY 'Secret1!'",
+    "create user if not exists bob identified by 'Secret1!'",
+    "GRANT ALL ON *.* TO bob IDENTIFIED BY 'Secret1!'",
+    "ALTER USER bob IDENTIFIED WITH caching_sha2_password BY 'Secret1!'",
+    "CREATE USER bob IDENTIFIED WITH mysql_native_password AS '*2470C0C06DEE42FD1618BB99005ADCA2EC9D1E19'",
+    "SET PASSWORD = 'Secret1!'",
+    "set  password  for bob = 'Secret1!'",
+    "select 1; ALTER USER bob IDENTIFIED BY 'Secret1!'",
+    "SELECT 1;\n  alter\tuser bob\n  identified by 'Secret1!';",
+    "Alter User bob Identified By 'Secret1!'",
+    "/*!80000 ALTER USER bob IDENTIFIED BY 'Secret1!' */",
+    "CHANGE REPLICATION SOURCE TO SOURCE_USER='repl', SOURCE_PASSWORD='Secret1!'",
+    "ALTER USER bob IDENTIFIED BY 'Secret1!",  # unterminated
+]
+
+
+@pytest.mark.parametrize('line', SECRET_LINES)
+def test_lines_with_credentials_are_not_sent_to_atuin(fake_atuin, history, tmp_path, line):
+    fake = fake_atuin(stdout='id\n')
+    h = history()
+    h.append_string(line)
+    h.store_string(line)  # a direct caller is filtered too
+    assert fake.calls == []
+    assert not (tmp_path / 'hist').exists()
+
+
+@pytest.mark.parametrize('line', SECRET_LINES)
+def test_lines_with_credentials_are_not_written_to_the_history_file(tmp_path, line):
+    h = FileHistoryWithTimestamp(tmp_path / 'hist', frecency_history_entries=0)
+    h.append_string(line)
+    assert not (tmp_path / 'hist').exists()
+
+
+@pytest.mark.parametrize(
+    'line',
+    [
+        'SELECT password FROM users',
+        "SELECT * FROM t WHERE note = 'identified by password'",
+        'SELECT `identified` FROM t',
+        "UPDATE users SET password_hash = NULL WHERE id = 1",
+        'SHOW VARIABLES LIKE "%password%"',
+    ],
+)
+def test_lines_that_only_mention_passwords_are_still_stored(fake_atuin, history, tmp_path, line):
+    fake = fake_atuin(stdout='id\n')
+    history().append_string(line)
+    assert fake.calls[-1][-1] == line
+
+    h = FileHistoryWithTimestamp(tmp_path / 'file-hist', frecency_history_entries=0)
+    h.append_string(line)
+    assert f'+{line}\n' in (tmp_path / 'file-hist').read_text(encoding='utf-8')

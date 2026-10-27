@@ -41,7 +41,7 @@ def _comment_length(text: str, i: int) -> int:
     return 0
 
 
-def strip_invisible_outside_literals(text: str) -> str:
+def strip_invisible_outside_literals(text: str, before: str = '') -> str:
     """Replace invisible characters, leaving quoted literals byte for byte.
 
     Inside `'...'`, `"..."` and backticks the characters are data, so rewriting
@@ -50,44 +50,55 @@ def strip_invisible_outside_literals(text: str) -> str:
 
     Comments are not data, so they are cleaned like code; a quote inside one
     (`-- don't`) must not be taken for the start of a literal.
+
+    `before` is the text that `text` will follow, such as the buffer up to the
+    cursor for a paste. It only sets the state `text` starts in (inside a
+    literal or a comment), and is not part of the result.
     """
+    source = before + text
+    offset = len(before)
     out: list[str] = []
+
+    def emit(start: int, end: int, clean: bool) -> None:
+        start = max(start, offset)
+        if start < end:
+            piece = source[start:end]
+            out.append(piece.translate(TRANSLATIONS) if clean else piece)
+
     quote: str | None = None
     i = 0
-    while i < len(text):
-        char = text[i]
+    while i < len(source):
+        char = source[i]
 
         if quote is None:
-            if comment_length := _comment_length(text, i):
-                out.append(text[i : i + comment_length].translate(TRANSLATIONS))
+            if comment_length := _comment_length(source, i):
+                emit(i, i + comment_length, True)
                 i += comment_length
                 continue
             if char in QUOTES:
                 quote = char
-                out.append(char)
+                emit(i, i + 1, False)
             else:
-                replacement = TRANSLATIONS.get(ord(char), char)
-                if replacement is not None:
-                    out.append(replacement)
+                emit(i, i + 1, True)
             i += 1
             continue
 
         # A backslash escapes the next character in strings, but not in
         # backtick-quoted identifiers.
-        if char == '\\' and quote != '`' and i + 1 < len(text):
-            out.append(text[i : i + 2])
+        if char == '\\' and quote != '`' and i + 1 < len(source):
+            emit(i, i + 2, False)
             i += 2
             continue
 
         # A doubled quote is an escaped quote, not the end of the literal.
-        if char == quote and i + 1 < len(text) and text[i + 1] == quote:
-            out.append(char * 2)
+        if char == quote and i + 1 < len(source) and source[i + 1] == quote:
+            emit(i, i + 2, False)
             i += 2
             continue
 
         if char == quote:
             quote = None
-        out.append(char)
+        emit(i, i + 1, False)
         i += 1
 
     return ''.join(out)

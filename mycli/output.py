@@ -80,7 +80,10 @@ def format_as_grid(
     """Lay out one column's values column-major, like `ls -C`, in a framed box under the header.
 
     Returns None when the values cannot be shown as plain text on one line each
-    (bytes, newlines, tabs) or when fewer than two columns fit in `width`.
+    (bytes, newlines, tabs), when a value's extent would be ambiguous between
+    the blanks that separate cells (empty, leading or trailing blanks, two
+    spaces in a row, any whitespace other than a space), or when fewer than two
+    columns fit in `width`.
     """
     values = []
     nulls = set()
@@ -92,8 +95,8 @@ def format_as_grid(
             return None
         else:
             value = str(value)
-            if '\n' in value or '\t' in value:
-                return None
+        if not value or value.strip() != value or '  ' in value or any(c.isspace() and c != ' ' for c in value):
+            return None
         values.append(value)
     if len(values) < 2:
         return None
@@ -385,14 +388,19 @@ class OutputMixin(MyCliState):
         if result.header or (result.rows and result.preamble):
             column_types = None
             colalign = None
+            # Rows kept from a cursor (\last) carry its description along.
             if isinstance(result.rows, Cursor):
+                description, has_rows = result.rows.description, result.rows.rowcount > 0
+            else:
+                description, has_rows = result.description, bool(result.rows)
+            if isinstance(result.rows, Cursor) or description is not None:
 
                 def get_col_type(col) -> type:
                     col_type = FIELD_TYPES.get(col[1], str)
                     return col_type if type(col_type) is type else str
 
-                if result.rows.rowcount > 0:
-                    column_types = [get_col_type(tup) for tup in result.rows.description]
+                if has_rows:
+                    column_types = [get_col_type(tup) for tup in description]
                     colalign = [numeric_alignment if x in (int, float, Decimal) else 'left' for x in column_types]
                 else:
                     column_types, colalign = [], []

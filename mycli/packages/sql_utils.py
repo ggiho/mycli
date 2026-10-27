@@ -579,6 +579,40 @@ def is_password_change(text: str) -> bool:
     return stmt_type in ('alter_user', 'set_password')
 
 
+_CREDENTIAL_WORDS = re.compile(r'\b(identified|password)\b', re.IGNORECASE)
+_EXECUTABLE_COMMENT_START = re.compile(r'/\*!\d*')
+
+
+def has_credentials(statement: str) -> bool:
+    """Return True if the statement could carry a password or password hash.
+
+    Covers SET PASSWORD, ALTER USER, `IDENTIFIED BY|WITH ...` (CREATE USER,
+    GRANT, ...) and the replication `*_PASSWORD` options, in any case and
+    spacing. MySQL runs the contents of `/*! ... */`, so those are checked too.
+    A word inside a string literal does not count. Text that cannot be
+    tokenized counts if it mentions IDENTIFIED or PASSWORD at all.
+    """
+    exposed = _EXECUTABLE_COMMENT_START.sub(' ', statement)
+    tt = sqlglot.tokens.TokenType
+    try:
+        tokens = list(sqlglot.tokenize(exposed, dialect='mysql'))
+    except sqlglot.errors.TokenError:
+        return bool(_CREDENTIAL_WORDS.search(exposed))
+
+    words = [t.text.upper() if t.token_type not in (tt.STRING, tt.IDENTIFIER) else None for t in tokens]
+    start = 0
+    for end in [i for i, t in enumerate(tokens) if t.token_type == tt.SEMICOLON] + [len(tokens)]:
+        chunk = words[start:end]
+        start = end + 1
+        if chunk[:2] in (['ALTER', 'USER'], ['SET', 'PASSWORD']):
+            return True
+        if any(word in ('MASTER_PASSWORD', 'SOURCE_PASSWORD') for word in chunk):
+            return True
+        if any(word == 'IDENTIFIED' and following in ('BY', 'WITH') for word, following in zip(chunk, chunk[1:], strict=False)):
+            return True
+    return False
+
+
 def extract_new_password(text: str) -> str | None:
     """Extract the new password from an ALTER USER or SET PASSWORD statement."""
     _, password = classify_sandbox_statement(text)

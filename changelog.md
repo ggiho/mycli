@@ -1,3 +1,25 @@
+Upcoming (TBD)
+==============
+
+Features
+--------
+* Optionally store query history in atuin with `atuin_history`, and open atuin's search on Up with `atuin_keys`.
+* Add F5 to show the `EXPLAIN` plan of the statement under the cursor, cancellable with Ctrl-C.
+* Add `\last` to show the last result again and `\copy` to copy it to the clipboard.
+* Add `\fq` to toggle showing the text of favorite queries as they run.
+* Give each favorite query a command of its own name, such as `/ps` for `/f ps`.
+* Add `\t` to list tables (`\timing` toggles timing) and `\u` to list users or show an account's grants.
+* Change the database with `\c` rather than `\u`, as in pgcli.
+* Add `\!` for `system`, and psql-style `\d`, `\dn` and `\list` aliases.
+* Lay out single-column results as an ls-style grid on screen, unless `grid_output` is off.
+* Strip invisible characters such as no-break spaces from pasted, sourced and edited SQL, outside quoted literals.
+
+
+Bug Fixes
+---------
+* Keep every statement that can carry a password out of history, including `CREATE USER`, `GRANT ... IDENTIFIED BY` and multi-statement lines.
+
+
 2.17.0 (2026/08/25)
 ==============
 

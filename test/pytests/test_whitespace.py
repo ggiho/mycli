@@ -86,3 +86,23 @@ def test_a_line_separator_ends_a_line_comment() -> None:
 )
 def test_code_that_only_looks_like_a_comment_keeps_its_literals(sql: str) -> None:
     assert NBSP in strip_invisible_outside_literals(sql)
+
+
+@pytest.mark.parametrize(
+    ('before', 'pasted', 'expected'),
+    [
+        # Inside an open literal the paste is data, up to the quote that closes it.
+        ("WHERE name = '", "Kim Min Su'", "Kim Min Su'"),
+        ("WHERE name = '", "Kim Su' AND x = 1", "Kim Su' AND x = 1"),
+        ('WHERE `col', ' x`', ' x`'),
+        ("WHERE a = 'it''", "s x'", "s x'"),
+        ("WHERE a = 'x\\", "' '", "' '"),  # the backslash escapes the pasted quote
+        # Inside an open comment the paste is cleaned like the comment, up to its end.
+        ('SELECT 1 /* note', ' x */ ', ' x */ '),
+        ('SELECT 1 -- note', " it's\nSELECT ' '", " it's\nSELECT ' '"),
+        # After a closed literal the paste is code again.
+        ("WHERE name = 'a'", ' AND b', ' AND b'),
+    ],
+)
+def test_the_text_before_sets_the_starting_state(before, pasted, expected):
+    assert strip_invisible_outside_literals(pasted, before) == expected
