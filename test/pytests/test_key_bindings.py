@@ -767,3 +767,20 @@ def test_bracketed_paste_uses_the_text_before_the_cursor_only() -> None:
             multiline=False,
         )
         assert session.prompt() == "x = 'a b'"
+
+
+def test_result_toggle_preserves_draft_and_cursor_without_executing(monkeypatch) -> None:
+    from unittest.mock import Mock
+
+    from prompt_toolkit.buffer import Buffer
+
+    viewer = Mock()
+    monkeypatch.setattr(key_bindings, 'configured_result_viewer', lambda: viewer)
+    monkeypatch.setattr(key_bindings, 'run_in_terminal', lambda callback, **kwargs: callback())
+    kb = key_bindings.mycli_bindings(DummyMyCli(DummyKeysConfig()))
+    buffer = Buffer(document=Document('select * from users where id = ', cursor_position=12))
+    event = SimpleNamespace(current_buffer=buffer, app=SimpleNamespace(current_buffer=buffer))
+    binding_handler(kb, 'c-x', 'c-v')(event)
+    viewer.resume.assert_called_once_with()
+    assert buffer.text == 'select * from users where id = '
+    assert buffer.cursor_position == 12

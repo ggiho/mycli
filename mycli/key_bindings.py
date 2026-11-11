@@ -32,6 +32,7 @@ from mycli.packages.ptoolkit import atuin
 from mycli.packages.ptoolkit.fzf import search_history
 from mycli.packages.ptoolkit.utils import safe_invalidate_display
 from mycli.packages.whitespace import strip_invisible_outside_literals
+from mycli.result_viewer import configured_result_viewer
 
 _logger = logging.getLogger(__name__)
 
@@ -193,6 +194,13 @@ def _cancel_explain(sqlexecute) -> None:
 def mycli_bindings(mycli) -> KeyBindings:
     """Custom key bindings for mycli."""
     kb = KeyBindings()
+    viewer = configured_result_viewer()
+    if viewer is not None:
+
+        @kb.add('c-x', 'c-v')
+        def reopen_result(event: KeyPressEvent) -> None:
+            # Suspend rendering only; the draft and cursor stay in this buffer.
+            run_in_terminal(viewer.resume, in_executor=True)
 
     def _atuin_setting(key: str, default: str = '') -> str:
         """Read a [main] value without assuming the section exists.
