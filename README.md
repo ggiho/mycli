@@ -239,10 +239,7 @@ Common topics include:
 
 ### Cached SQL result viewer
 
-When the custom `sql-pager/viewer` pager and a compatible `sql-viewer` are
-installed, press **Alt+T (Option+T on macOS)** to switch between the query prompt and the
-last displayed result. The prompt keeps its draft and cursor. Reopening does
-not execute SQL again. Result selection, sorting, search and scroll positions
-are restored. The cache belongs to this CLI process and is removed at exit;
-results larger than 64 MiB are not cached. Other pager configurations retain
-their existing key bindings. Restart mycli after installing the update.
+The custom SQL pager can retain the last displayed result and viewer state in a
+private, per-process cache. No result-toggle shortcut is assigned by default.
+Choose a shortcut explicitly before adding a prompt binding. Existing terminal
+and editor shortcuts remain available. Results above 64 MiB are not cached.

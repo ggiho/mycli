@@ -194,13 +194,7 @@ def _cancel_explain(sqlexecute) -> None:
 def mycli_bindings(mycli) -> KeyBindings:
     """Custom key bindings for mycli."""
     kb = KeyBindings()
-    viewer = configured_result_viewer()
-    if viewer is not None:
-
-        @kb.add('escape', 't', filter=~is_searching)
-        def reopen_result(event: KeyPressEvent) -> None:
-            # Suspend rendering only; the draft and cursor stay in this buffer.
-            run_in_terminal(viewer.resume, in_executor=True)
+    configured_result_viewer()
 
     def _atuin_setting(key: str, default: str = '') -> str:
         """Read a [main] value without assuming the section exists.
