@@ -240,7 +240,7 @@ Common topics include:
 ### Cached SQL result viewer
 
 When the custom `sql-pager/viewer` pager and a compatible `sql-viewer` are
-installed, press **Ctrl+G** to switch between the query prompt and the
+installed, press **Alt+T (Option+T on macOS)** to switch between the query prompt and the
 last displayed result. The prompt keeps its draft and cursor. Reopening does
 not execute SQL again. Result selection, sorting, search and scroll positions
 are restored. The cache belongs to this CLI process and is removed at exit;

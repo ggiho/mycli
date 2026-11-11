@@ -197,7 +197,7 @@ def mycli_bindings(mycli) -> KeyBindings:
     viewer = configured_result_viewer()
     if viewer is not None:
 
-        @kb.add('c-g', filter=~is_searching)
+        @kb.add('escape', 't', filter=~is_searching)
         def reopen_result(event: KeyPressEvent) -> None:
             # Suspend rendering only; the draft and cursor stay in this buffer.
             run_in_terminal(viewer.resume, in_executor=True)
