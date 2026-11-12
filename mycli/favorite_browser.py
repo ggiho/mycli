@@ -59,7 +59,12 @@ class FavoriteBrowser:
         self.original_name = ''
         self.original_sql = ''
         self.pending_name = ''
-        self.search = TextArea(height=1, multiline=False, prompt='Search: ', name='favorite-search')
+        self.search = TextArea(
+            height=1,
+            multiline=False,
+            prompt=lambda: 'Search: ' if self._searching() else 'Search (f,/): ',
+            name='favorite-search',
+        )
         self.preview = TextArea(read_only=True, lexer=PygmentsLexer(MyCliLexer), scrollbar=True, focus_on_click=True)
         self.editor = TextArea(lexer=PygmentsLexer(MyCliLexer), line_numbers=True, scrollbar=True, focus_on_click=True)
         self.new_name = TextArea(height=1, multiline=False, prompt='New name: ', name='favorite-name')
@@ -79,7 +84,7 @@ class FavoriteBrowser:
         self.discard_button = Button('Discard', lambda: self.application.exit())
         self.continue_button = Button('Keep editing', self.back_to_editor, width=16)
         self.application: Application[FavoriteOutcome | None] = Application(
-            layout=Layout(DynamicContainer(self._body), focused_element=self.search),
+            layout=Layout(DynamicContainer(self._body), focused_element=self.list_control),
             key_bindings=self._bindings(),
             style=merge_styles([
                 style or Style([]),
@@ -127,12 +132,32 @@ class FavoriteBrowser:
 
     def _update_preview(self) -> None:
         sql = self.filtered[self.index][1] if self.filtered else ''
-        self.preview.buffer.set_document(Document(sql), bypass_readonly=True)
+        self.preview.buffer.set_document(Document(sql, cursor_position=0), bypass_readonly=True)
         self.application.invalidate()
 
     def move(self, step: int) -> None:
         self.index = max(0, min(self.index + step, len(self.filtered) - 1))
         self._update_preview()
+
+    def _searching(self) -> bool:
+        return self.screen == 'browse' and hasattr(self, 'application') and self.application.layout.has_focus(self.search)
+
+    def begin_search(self) -> None:
+        self.application.layout.focus(self.search)
+        self.search.buffer.cursor_position = len(self.search.text)
+
+    def finish_search(self) -> None:
+        self.application.layout.focus(self.list_control)
+
+    def _move_vertical(self, step: int) -> None:
+        if self.application.layout.has_focus(self.preview):
+            if step > 0:
+                self.preview.buffer.cursor_down(count=step)
+            else:
+                self.preview.buffer.cursor_up(count=-step)
+        else:
+            self.move(step)
+            self.application.layout.focus(self.list_control)
 
     def _buttons(self, *buttons: Button) -> VSplit:
         return VSplit(list(buttons), padding=2)
@@ -159,7 +184,11 @@ class FavoriteBrowser:
                 self.search,
                 body,
                 status,
-                Label(f'↑↓ select · Enter {action} · Tab actions · Esc cancel'),
+                Label(
+                    'Search · Enter/Esc list · ↑↓ select'
+                    if self._searching()
+                    else f'hjkl move · f,/ search · Enter {action} · Tab actions · Esc close'
+                ),
                 self._buttons(self.load_button, self.edit_button, self.cancel_button),
             ])
         footer: list[AnyContainer]
@@ -187,6 +216,28 @@ class FavoriteBrowser:
                 and self.application.layout.has_focus(self.list_control)
             )
         )
+        navigation = Condition(lambda: self.screen == 'browse' and not self._searching())
+
+        @kb.add('j', filter=navigation)
+        def vim_down(_event: KeyPressEvent) -> None:
+            self._move_vertical(1)
+
+        @kb.add('k', filter=navigation)
+        def vim_up(_event: KeyPressEvent) -> None:
+            self._move_vertical(-1)
+
+        @kb.add('h', filter=navigation)
+        def focus_list(_event: KeyPressEvent) -> None:
+            self.application.layout.focus(self.list_control)
+
+        @kb.add('l', filter=navigation)
+        def focus_preview(_event: KeyPressEvent) -> None:
+            self.application.layout.focus(self.preview)
+
+        @kb.add('f', filter=navigation)
+        @kb.add('/', filter=navigation)
+        def search(_event: KeyPressEvent) -> None:
+            self.begin_search()
 
         @kb.add('up', filter=browsing)
         def up(_event: KeyPressEvent) -> None:
@@ -196,21 +247,32 @@ class FavoriteBrowser:
         def down(_event: KeyPressEvent) -> None:
             self.move(1)
 
-        @kb.add('enter', filter=browsing)
+        @kb.add('enter', filter=browsing | Condition(lambda: self.screen == 'browse' and self.application.layout.has_focus(self.preview)))
         def select(_event: KeyPressEvent) -> None:
-            self.edit_selected() if self.edit_on_enter else self.load()
+            if self._searching():
+                self.finish_search()
+            elif self.edit_on_enter:
+                self.edit_selected()
+            else:
+                self.load()
 
         @kb.add('tab')
         def next_field(event: KeyPressEvent) -> None:
             focus_next(event)
+            if self._searching():
+                focus_next(event)
 
         @kb.add('s-tab')
         def previous_field(event: KeyPressEvent) -> None:
             focus_previous(event)
+            if self._searching():
+                focus_previous(event)
 
         @kb.add('escape', filter=Condition(lambda: self.screen != 'edit' or self.editing_mode != EditingMode.VI))
         def escape(_event: KeyPressEvent) -> None:
-            if self.screen in ('save_as', 'overwrite', 'discard'):
+            if self._searching():
+                self.finish_search()
+            elif self.screen in ('save_as', 'overwrite', 'discard'):
                 self.back_to_editor()
             else:
                 self.cancel()

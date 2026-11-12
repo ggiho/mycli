@@ -167,7 +167,7 @@ def test_real_application_search_and_enter_only_load(favorites: FavoriteQueries,
             ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=Output())
             task = asyncio.create_task(ui.application.run_async())
             await asyncio.sleep(0)
-            pipe.send_text('orders\r')
+            pipe.send_text('/orders\r\r')
             return await asyncio.wait_for(task, 3)
 
     outcome = asyncio.run(scenario())
@@ -233,3 +233,114 @@ def test_unchanged_save_does_not_rewrite_configuration(browser: tuple[FavoriteBr
     save.assert_not_called()
     result = exit_app.call_args.kwargs['result']
     assert result.message == 'orders: No changes.' and not result.saved
+
+
+@pytest.mark.parametrize('prefix', ['f', '/'])
+def test_search_mode_accepts_motion_keys_as_text(favorites: FavoriteQueries, prefix: str) -> None:
+    favorites.config['favorite_queries']['motion_chars'] = "SELECT 'hjklf/'"
+
+    async def scenario() -> FavoriteOutcome | None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            assert ui.application.layout.has_focus(ui.list_control)
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text(prefix + 'hjklf/\r\r')
+            return await asyncio.wait_for(task, 3)
+
+    result = asyncio.run(scenario())
+    assert result is not None and result.query == "SELECT 'hjklf/'"
+
+
+def test_hjkl_selects_rows_and_switches_preview_without_search(favorites: FavoriteQueries) -> None:
+    favorites.config['favorite_queries']['all_users'] = 'SELECT id,\n name\nFROM users'
+
+    async def scenario() -> FavoriteOutcome | None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('lj')
+            for _ in range(100):
+                if ui.preview.buffer.document.cursor_position_row == 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.application.layout.has_focus(ui.preview)
+            assert ui.index == 0 and ui.preview.buffer.document.cursor_position_row == 1
+            pipe.send_text('khj\r')
+            result = await asyncio.wait_for(task, 3)
+            assert ui.search.text == ''
+            return result
+
+    result = asyncio.run(scenario())
+    assert result is not None and result.query == "SELECT * FROM orders WHERE city = 'Busan'"
+
+
+def test_search_escape_returns_to_list_and_second_escape_closes(favorites: FavoriteQueries) -> None:
+    async def scenario() -> None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            ui.application.ttimeoutlen = ui.application.timeoutlen = 0.01
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('/orders\x1b')
+            for _ in range(100):
+                if ui.search.text == 'orders' and ui.application.layout.has_focus(ui.list_control):
+                    break
+                await asyncio.sleep(0.01)
+            assert not task.done()
+            assert ui.search.text == 'orders' and ui.application.layout.has_focus(ui.list_control)
+            assert [n for n, _ in ui.filtered] == ['orders']
+            pipe.send_text('\x1b')
+            assert await asyncio.wait_for(task, 3) is None
+
+    asyncio.run(scenario())
+
+
+def test_editor_keeps_motion_and_search_characters_literal(favorites: FavoriteQueries) -> None:
+    async def scenario() -> FavoriteOutcome | None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, name='orders', input_stream=pipe, output_stream=DummyOutput())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('\x01\x0bhjklf/\t\r')
+            return await asyncio.wait_for(task, 3)
+
+    result = asyncio.run(scenario())
+    assert result is not None and result.saved
+    assert favorites.get('orders') == 'hjklf/'
+
+
+def test_tab_cycle_keeps_search_inactive(favorites: FavoriteQueries) -> None:
+    async def scenario() -> FavoriteOutcome | None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('\t\t\t\t\tjl\r')
+            result = await asyncio.wait_for(task, 3)
+            assert ui.search.text == ''
+            return result
+
+    result = asyncio.run(scenario())
+    assert result is not None and result.query == "SELECT * FROM orders WHERE city = 'Busan'"
+
+
+def test_fe_navigation_enter_still_opens_editor(favorites: FavoriteQueries) -> None:
+    async def scenario() -> None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, edit=True, input_stream=pipe, output_stream=DummyOutput())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('jl\r')
+            for _ in range(100):
+                if ui.screen == 'edit':
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.screen == 'edit' and ui.original_name == 'orders'
+            assert ui.editor.text == "SELECT * FROM orders WHERE city = 'Busan'"
+            assert not task.done()
+            ui.cancel()
+            assert await asyncio.wait_for(task, 3) is None
+
+    asyncio.run(scenario())

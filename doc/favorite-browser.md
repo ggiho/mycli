@@ -1,8 +1,10 @@
 # Favorite query browser
 
 In the interactive prompt, use `\f` (or `/f`) to search saved queries by name or
-SQL text. The selected query appears in full in the preview. Arrow keys change
-the selection; Enter or **Load** puts the SQL into the normal query prompt.
+SQL text. The browser starts with the list focused. `j`/`k` select a favorite;
+`h`/`l` focus the list/SQL preview. In the preview, `j`/`k` move through SQL lines.
+Arrow keys remain available. Enter on either pane, or **Load**, puts the SQL into the
+normal query prompt.
 Edit it there and press Enter when ready to execute it. Loading does not update
 the stored favorite.
 
@@ -20,7 +22,11 @@ The **Edit** button in the browser opens the same editor.
 - **Cancel** asks whether to discard unsaved SQL. **Keep editing** retains it.
 - A storage error leaves the editor and its SQL available for another attempt.
 
-Tab/Shift+Tab move between controls and buttons; buttons also support the mouse.
+Press `f` or `/` to enter search. Type the query, then press Enter or Escape to
+return to list navigation; the filter stays active. Search characters such as
+`hjkl`, `f` and `/` are inserted normally while the search field is focused.
+Reopen search to edit or clear the filter. Tab/Shift+Tab traverse the preview and
+actions without activating search; buttons also support the mouse.
 The SQL editor follows the configured Emacs/Vi mode. In the Vi editor, Escape
 keeps its normal Vim meaning; use **Cancel** to leave. In the browser, Escape
 closes it. The browser adapts to narrow terminals and follows the current SQL

@@ -80,7 +80,7 @@ def test_terminal_load_and_save_restore_screen_without_sql(tmp_path: Path, editi
         else:
             os.write(master, b'\\f\r')
             until(b'SQL preview')
-            os.write(master, b'template\r')
+            os.write(master, b'/template\r\r')
         until(b'RESULT_JSON ')
         deadline = time.monotonic() + 5
         while child.poll() is None:

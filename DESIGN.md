@@ -38,7 +38,10 @@
 - No dependencies or additional theme system.
 
 ## Accessibility
-- Search receives initial focus; arrows select; Enter loads/opens editing; Tab/Shift+Tab reach actions.
+- The list receives initial focus. j/k select or read preview lines; h/l focus list/preview.
+- f or / explicitly enters search; Enter/Escape returns to list navigation with the filter retained.
+- Search/editor/name fields accept hjkl and search characters as text; Tab traversal skips inactive search.
+- Arrows remain available; Enter on either pane loads/opens editing; Tab/Shift+Tab reach actions.
 - Buttons and selection markers convey state independently of color. Mouse selection is supported.
 - SQL editor follows configured Emacs/Vi mode; Escape retains its Vim meaning in the Vi editor.
 - Keep focus visible. No screen-reader certification is claimed.
