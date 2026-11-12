@@ -194,7 +194,13 @@ def _cancel_explain(sqlexecute) -> None:
 def mycli_bindings(mycli) -> KeyBindings:
     """Custom key bindings for mycli."""
     kb = KeyBindings()
-    configured_result_viewer()
+    viewer = configured_result_viewer()
+    if viewer is not None:
+
+        @kb.add('c-t', filter=~is_searching)
+        def reopen_result(event: KeyPressEvent) -> None:
+            # The user selected Ctrl+T; preserve the prompt buffer and cursor.
+            run_in_terminal(viewer.resume, in_executor=True)
 
     def _atuin_setting(key: str, default: str = '') -> str:
         """Read a [main] value without assuming the section exists.

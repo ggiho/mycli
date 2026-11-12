@@ -775,3 +775,20 @@ def test_result_toggle_does_not_reserve_a_user_shortcut(monkeypatch) -> None:
     monkeypatch.setattr(key_bindings, 'configured_result_viewer', lambda: Mock())
     kb = key_bindings.mycli_bindings(DummyMyCli(DummyKeysConfig()))
     assert not any(item.keys in [('escape', 't'), ('c-g',), ('c-x', 'c-v')] for item in kb.bindings)
+
+
+def test_user_selected_ctrl_t_preserves_query_draft(monkeypatch) -> None:
+    from unittest.mock import Mock
+
+    from prompt_toolkit.buffer import Buffer
+
+    viewer = Mock()
+    monkeypatch.setattr(key_bindings, 'configured_result_viewer', lambda: viewer)
+    monkeypatch.setattr(key_bindings, 'run_in_terminal', lambda callback, **kwargs: callback())
+    kb = key_bindings.mycli_bindings(DummyMyCli(DummyKeysConfig()))
+    buffer = Buffer(document=Document('select * from users where id = ', cursor_position=12))
+    event = SimpleNamespace(current_buffer=buffer, app=SimpleNamespace(current_buffer=buffer))
+    binding_handler(kb, 'c-t')(event)
+    viewer.resume.assert_called_once_with()
+    assert buffer.text == 'select * from users where id = '
+    assert buffer.cursor_position == 12

@@ -239,7 +239,9 @@ Common topics include:
 
 ### Cached SQL result viewer
 
-The custom SQL pager can retain the last displayed result and viewer state in a
-private, per-process cache. No result-toggle shortcut is assigned by default.
-Choose a shortcut explicitly before adding a prompt binding. Existing terminal
-and editor shortcuts remain available. Results above 64 MiB are not cached.
+With the compatible custom pager, the user-selected **Ctrl+T** switches between
+query input and the cached result. It replaces character transposition in the
+query prompt, retaining the draft and cursor. Viewer selection, search, sorting
+and scrolling are restored without executing SQL. Alt+E and Alt+T are unchanged.
+The private per-process cache is removed on normal exit; results above 64 MiB
+are not cached. Restart mycli after updating. Other pagers keep their bindings.
