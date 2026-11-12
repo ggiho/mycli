@@ -4,6 +4,7 @@ from functools import cached_property
 from prompt_toolkit.formatted_text import FormattedText, to_plain_text
 from pymysql.cursors import Cursor
 
+from mycli.result_pages import PagedRows
 from mycli.types import ImageProtocol
 
 
@@ -11,7 +12,7 @@ from mycli.types import ImageProtocol
 class SQLResult:
     preamble: str | None = None
     header: list[str] | str | None = None
-    rows: Cursor | list[tuple] | None = None
+    rows: Cursor | list[tuple] | PagedRows | None = None
     postamble: str | None = None
     status: str | FormattedText | None = None
     command: dict[str, str | float] | None = None

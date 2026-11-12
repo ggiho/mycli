@@ -45,6 +45,7 @@ from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 import pymysql
 from pymysql.cursors import Cursor, SSCursor
+import sqlparse
 
 import mycli as mycli_package
 from mycli.clibuffer import cli_is_multiline
@@ -96,6 +97,7 @@ from mycli.packages.sql_utils import (
 )
 from mycli.packages.sqlresult import SQLResult
 from mycli.packages.string_utils import sanitize_terminal_title
+from mycli.result_pages import PagedRows
 from mycli.sqlexecute import SQLExecute
 from mycli.types import Query
 
@@ -563,6 +565,19 @@ def _output_results(
                 mycli.echo('Aborted!', err=True, fg='red')
                 break
 
+        if isinstance(result.rows, PagedRows):
+            viewer = getattr(mycli, 'result_viewer', None)
+            assert viewer is not None
+            special.store_last_result(viewer.headers, viewer.raw_rows, result.rows.description)
+            duration = time.time() - start
+            viewer.show()
+            if viewer.fetch_error:
+                raise RuntimeError(viewer.message)
+            if special.is_timing_enabled():
+                mycli.output_timing(f'Time: {duration:0.03f}s')
+            result_count += 1
+            start = time.time()
+            continue
         capture_last_result(result, mycli.logger)
 
         if mycli.prompt_session is not None:
@@ -755,6 +770,9 @@ def _keepalive_hook(
     if mycli.keepalive_ticks < 1:
         return
 
+    viewer = getattr(mycli, 'result_viewer', None)
+    if viewer is not None and viewer.live_cursor:
+        return
     if EXPLAIN_RUNNING.is_set():
         # F5's EXPLAIN is using the connection on another thread.
         return
@@ -986,7 +1004,31 @@ def _one_iteration(
         mycli.log_query(query_history_text)
 
         start = time.time()
-        results = sqlexecute.run(text)
+        viewer = getattr(mycli, 'result_viewer', None)
+        if viewer is not None:
+            viewer.release_result()
+        use_viewer = (
+            viewer is not None
+            and viewer.paging_enabled
+            and polars_transform is None
+            and mycli.main_formatter.format_name == 'ascii_escaped'
+            and len(sqlparse.split(text)) == 1
+            and special.is_pager_enabled()
+            and not special.is_redirected()
+            and special.iocommands.tee_file is None
+            and not mycli.logfile
+            and not special.is_show_warnings_enabled()
+            and not text.rstrip().endswith((r'\G', r'\g', r'\x'))
+            and not special.is_expanded_output()
+            and not special.is_explorer_output()
+            and not text.lstrip().startswith('\\')
+        )
+        if use_viewer:
+            assert viewer is not None
+            viewer.null_string = mycli.null_string or 'NULL'
+            results = sqlexecute.run(text, result_viewer=viewer)
+        else:
+            results = sqlexecute.run(text)
         mycli.main_formatter.query = text
         mycli.redirect_formatter.query = text
         mycli.explorer_formatter.query = text

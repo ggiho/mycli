@@ -142,6 +142,9 @@ def _run_explain(mycli, sql: str) -> None:
     statement goes straight to a cursor: never through SQLExecute.run(), which
     would split it and dispatch special commands.
     """
+    viewer = getattr(mycli, 'result_viewer', None)
+    if viewer is not None:
+        viewer.release_result()
     try:
         with mycli.sqlexecute.conn.cursor() as cur:
             cur.execute(f'EXPLAIN {sql}')
@@ -194,7 +197,8 @@ def _cancel_explain(sqlexecute) -> None:
 def mycli_bindings(mycli) -> KeyBindings:
     """Custom key bindings for mycli."""
     kb = KeyBindings()
-    viewer = configured_result_viewer()
+    viewer = getattr(mycli, 'result_viewer', None) or configured_result_viewer()
+    mycli.result_viewer = viewer
     if viewer is not None:
 
         @kb.add('c-t', filter=~is_searching)

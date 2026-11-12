@@ -13,11 +13,13 @@ from pymysql.connections import Connection
 from pymysql.constants import FIELD_TYPE
 from pymysql.converters import conversions, convert_date, convert_datetime, convert_time, decoders
 from pymysql.cursors import Cursor
+import sqlparse
 
 from mycli.constants import ER_MUST_CHANGE_PASSWORD
 from mycli.packages.special import iocommands
 from mycli.packages.special.main import CommandNotFound, execute
 from mycli.packages.sqlresult import SQLResult
+from mycli.result_pages import PagedRows, mysql_stream
 
 _logger = logging.getLogger(__name__)
 
@@ -354,7 +356,7 @@ class SQLExecute:
             _logger.debug("Doris detection failed: %s", e)
         return None
 
-    def run(self, statement: str) -> Generator[SQLResult, None, None]:
+    def run(self, statement: str, *, result_viewer: Any = None) -> Generator[SQLResult, None, None]:
         """Execute the sql in the database and return the results."""
 
         # Remove spaces and EOL
@@ -395,9 +397,21 @@ class SQLExecute:
                 yield from execute(cur, sql)
             except CommandNotFound:  # Regular SQL
                 _logger.debug("Regular sql statement. sql: %r", sql)
+                if result_viewer is not None:
+                    streamed = mysql_stream(self, sql)
+                    if streamed is not None:
+                        result_viewer.begin(streamed, null_string=result_viewer.null_string)
+                        yield SQLResult(header=streamed.headers, rows=streamed, status='SELECT preview')
+                        continue
                 cur.execute(sql)
                 while True:
-                    yield self.get_result(cur)
+                    if result_viewer is not None and cur.description and sqlparse.parse(sql)[0].get_type() == 'SELECT':
+                        # The driver has already buffered this non-streamable query.
+                        buffered = PagedRows(iter(cur.fetchall()), cur.description, lambda: None, lambda: None, live=False)
+                        result_viewer.begin(buffered, null_string=result_viewer.null_string)
+                        yield SQLResult(header=buffered.headers, rows=buffered, status='SELECT buffered preview')
+                    else:
+                        yield self.get_result(cur)
 
                     # PyMySQL returns an extra, empty result set with stored
                     # procedures. We skip it (rowcount is zero and no
