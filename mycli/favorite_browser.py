@@ -235,28 +235,30 @@ class FavoriteBrowser:
             fields = [field for _key, field in self.parameter_fields]
             if self.parameter_extra is not None:
                 fields.append(self.parameter_extra)
-            choices: list[AnyContainer] = []
+            parameters = Frame(
+                ScrollablePane(HSplit(fields), show_scrollbar=len(fields) > 10),
+                title=f'Parameters · {self.parameter_name}',
+                height=Dimension(min=3 if self.variable_field is not None else 0, max=min(12, len(fields) + 2)),
+            )
+            content: list[AnyContainer]
             if self.variable_field is not None:
-                choices = [
+                content = [
+                    Frame(self.preview, title='Template', height=Dimension(min=3, max=5, weight=0)),
+                    parameters,
                     Frame(
                         self.variable_window,
                         title=f'Variable names · {len(self.variable_matches)}/{len(self.variable_candidates)}',
-                        height=Dimension(max=max(4, min(9, len(self.variable_matches) + 3))),
-                    )
+                    ),
                 ]
+            else:
+                content = [parameters, Frame(self.preview, title='Template')]
             help_text = (
                 '↑↓ pick · Enter use selected/typed filter · Esc back'
-                if choices
+                if self.variable_field is not None
                 else 'Enter next/load · Tab actions · Esc back · blank named inputs use defaults'
             )
             return HSplit([
-                Frame(
-                    ScrollablePane(HSplit(fields), show_scrollbar=len(fields) > 10),
-                    title=f'Parameters · {self.parameter_name}',
-                    height=Dimension(max=min(12, len(fields) + 2)),
-                ),
-                *choices,
-                Frame(self.preview, title='Template'),
+                *content,
                 status,
                 Label(help_text),
                 self._buttons(self.parameter_load_button, self.parameter_back_button),

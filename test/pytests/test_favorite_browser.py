@@ -686,3 +686,40 @@ def test_vi_editor_keeps_multi_key_motion_timeout(favorites: FavoriteQueries) ->
             assert await asyncio.wait_for(task, 3) is None
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('columns,rows', [(100, 26), (60, 24), (40, 16)])
+def test_variable_layout_keeps_input_visible_and_prioritizes_list(favorites: FavoriteQueries, columns: int, rows: int) -> None:
+    class Output(DummyOutput):
+        def get_size(self) -> Size:
+            return Size(rows=rows, columns=columns)
+
+    async def scenario() -> dict[str, int]:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(
+                favorites, variable_names=lambda: [f'variable_{i:02}' for i in range(40)], input_stream=pipe, output_stream=Output()
+            )
+            dimensions: dict[str, int] = {}
+
+            def rendered(_app: object) -> None:
+                if ui.screen != 'parameters' or ui.variable_loading or ui.variable_field is None or dimensions:
+                    return
+                windows = {'template': ui.preview.window, 'input': ui.variable_field.window, 'list': ui.variable_window}
+                dimensions.update({
+                    name: window.render_info.window_height if window.render_info is not None else 0 for name, window in windows.items()
+                })
+                ui.cancel()
+
+            ui.application.after_render += rendered
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('vars\r')
+            assert await asyncio.wait_for(task, 3) is None
+            return dimensions
+
+    dimensions = asyncio.run(scenario())
+    assert dimensions['input'] == 1
+    assert 1 <= dimensions['template'] <= 3
+    assert dimensions['list'] > dimensions['template']
+    if rows >= 24:
+        assert dimensions['list'] >= 10

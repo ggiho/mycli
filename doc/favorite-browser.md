@@ -61,7 +61,8 @@ template, not the filled SQL. The existing `\f name value` and
 
 For a single-parameter `SHOW GLOBAL VARIABLES LIKE ...` favorite such as `vars`,
 the parameter form also displays real variable names from the current connection
-target. Typing filters the names locally; Up/Down or a mouse click selects a name,
+target. A compact template preview sits above the input, and the variable-name
+list below it uses the remaining body space. Typing filters the names locally; Up/Down or a mouse click selects a name,
 and Enter inserts it into the original template and loads the query prompt.
 The first row keeps the current typed filter, so `timeout` can still query multiple
 variables. Typing after a selection returns to this free-input option.

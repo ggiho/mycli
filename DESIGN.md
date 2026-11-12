@@ -50,6 +50,8 @@
 
 ## Responsive behavior
 - At 80 columns and wider, place names beside preview; below 80 stack a bounded list above preview.
+- In global-variable parameter forms, show a compact template at the top, then the input; let the variable-name list fill the remaining body.
+- Bound the template preview to three content lines; keep its full text scrollable.
 - Wrap SQL rather than truncate it. Keep the editor/actions usable in ordinary narrow terminals.
 
 ## Interaction states
