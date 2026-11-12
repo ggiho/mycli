@@ -29,7 +29,9 @@ Tab/Shift+Tab traverse controls/actions; buttons also support the mouse.
 The SQL editor follows the configured Emacs/Vi mode. In the Vi editor, Escape
 keeps its normal Vim meaning; use **Cancel** to leave. In browser navigation,
 Escape closes the browser. The browser adapts to narrow terminals and follows the current SQL
-theme and terminal background. No terminal-global shortcut is installed.
+theme and terminal background. Modal screens use short Escape decoding/prefix
+waits; the SQL editor keeps its normal multi-key editing timeout. Complete arrow
+and Meta editing sequences still work. No terminal-global shortcut is installed.
 
 For example, selecting a favorite named `vars` whose SQL is
 `SHOW GLOBAL VARIABLES LIKE '%{{ kv.n }}%'` opens an `n` input. Enter `timeout`
@@ -39,7 +41,10 @@ Named template keys (`kv.name`, `kv['name']`, `kv.get('name')`) and numbered
 parameters (`$1`, `$2`, including repeated or multi-digit numbers) get individual
 fields. Enter advances to the next field; on the last field it loads the filled
 query. **Load** also submits the form. Escape/**Back** returns to the favorites
-without loading or saving SQL. A render error keeps the fields available to edit.
+without loading or saving SQL. Back restores the pane and caret that opened the
+form, so returning from search lets Backspace/Delete edit that search immediately.
+Navigation/preview origins retain their focus. A render error keeps the fields
+available to edit.
 
 Blank named fields omit that key, preserving template defaults such as
 `kv.get('n', 'default')`; without a default, ordinary `kv.n` expands to empty text.

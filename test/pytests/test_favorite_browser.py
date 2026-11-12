@@ -295,7 +295,6 @@ def test_search_escape_returns_to_list_and_second_escape_closes(favorites: Favor
     async def scenario() -> None:
         with create_pipe_input() as pipe:
             ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
-            ui.application.ttimeoutlen = ui.application.timeoutlen = 0.01
             task = asyncio.create_task(ui.application.run_async())
             await asyncio.sleep(0)
             pipe.send_text('orders\x1b')
@@ -380,23 +379,28 @@ def test_vars_search_prompts_and_accepts_parameter_text(favorites: FavoriteQueri
     assert not result.saved and Path(favorites.config_file or '').read_bytes() == before
 
 
-def test_parameter_escape_returns_to_filtered_list_without_saving(favorites: FavoriteQueries) -> None:
+def test_parameter_escape_restores_search_without_saving(favorites: FavoriteQueries) -> None:
     before = Path(favorites.config_file or '').read_bytes()
 
     async def scenario() -> None:
         with create_pipe_input() as pipe:
             ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
-            ui.application.ttimeoutlen = ui.application.timeoutlen = 0.01
             task = asyncio.create_task(ui.application.run_async())
             await asyncio.sleep(0)
-            pipe.send_text('vars\rtimeout\x1b')
+            pipe.send_text('vars\rtimeout')
             for _ in range(100):
-                if ui.screen == 'browse' and ui.application.layout.has_focus(ui.list_control):
+                if ui.screen == 'parameters':
                     break
                 await asyncio.sleep(0.01)
-            assert ui.screen == 'browse' and ui.application.layout.has_focus(ui.list_control)
-            assert ui.search.text == 'vars' and not task.done()
+            assert ui.screen == 'parameters'
             pipe.send_text('\x1b')
+            for _ in range(100):
+                if ui.screen == 'browse' and ui.application.layout.has_focus(ui.search):
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.screen == 'browse' and ui.application.layout.has_focus(ui.search)
+            assert ui.search.text == 'vars' and not task.done()
+            ui.cancel()
             assert await asyncio.wait_for(task, 3) is None
 
     asyncio.run(scenario())
@@ -589,6 +593,95 @@ def test_non_variable_parameter_does_not_load_metadata(favorites: FavoriteQuerie
                 await asyncio.sleep(0.01)
             assert ui.screen == 'edit'
             loader.assert_not_called()
+            ui.cancel()
+            assert await asyncio.wait_for(task, 3) is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('navigation_origin', [False, True])
+def test_parameter_escape_is_fast_and_restores_origin(favorites: FavoriteQueries, navigation_origin: bool) -> None:
+    async def scenario() -> None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('vars')
+            for _ in range(100):
+                if ui.search.text == 'vars':
+                    break
+                await asyncio.sleep(0.01)
+            if navigation_origin:
+                ui.finish_search()
+            pipe.send_text('\rtimeout')
+            for _ in range(100):
+                if ui.screen == 'parameters':
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.screen == 'parameters'
+            pipe.send_text('\x1b')
+            for _ in range(30):
+                if ui.screen == 'browse':
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.screen == 'browse', 'Escape did not leave the form within 300ms'
+            target = ui.list_control if navigation_origin else ui.search
+            assert ui.application.layout.has_focus(target)
+            if not navigation_origin:
+                pipe.send_text('\x7f\x08\x01\x1b[3~')
+                for _ in range(100):
+                    if ui.search.text == 'a':
+                        break
+                    await asyncio.sleep(0.01)
+                assert ui.search.text == 'a', 'Backspace/Delete must edit the restored search buffer'
+            ui.cancel()
+            assert await asyncio.wait_for(task, 3) is None
+
+    asyncio.run(scenario())
+
+
+def test_modal_meta_backspace_and_arrows_remain_editing_keys(favorites: FavoriteQueries) -> None:
+    async def scenario() -> None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('orders extra\x1b\x7f')
+            for _ in range(100):
+                if ui.search.text == 'orders ':
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.search.text == 'orders ' and ui.application.layout.has_focus(ui.search)
+            pipe.send_text('\x1b[D\x7f')
+            for _ in range(100):
+                if ui.search.text == 'order ':
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.search.text == 'order '
+            ui.cancel()
+            assert await asyncio.wait_for(task, 3) is None
+
+    asyncio.run(scenario())
+
+
+def test_vi_editor_keeps_multi_key_motion_timeout(favorites: FavoriteQueries) -> None:
+    favorites.config['favorite_queries']['orders'] = 'SELECT id\nFROM orders\nWHERE id = 23'
+
+    async def scenario() -> None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, name='orders', editing_mode=EditingMode.VI, input_stream=pipe, output_stream=DummyOutput())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            ui.application.vi_state.input_mode = InputMode.NAVIGATION
+            ui.editor.buffer.cursor_position = len(ui.editor.text)
+            pipe.send_text('g')
+            await asyncio.sleep(0.15)  # Longer than modal Escape handling, shorter than normal Vi key sequences.
+            pipe.send_text('g')
+            for _ in range(100):
+                if ui.editor.buffer.document.cursor_position_row == 0:
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.editor.buffer.document.cursor_position_row == 0
             ui.cancel()
             assert await asyncio.wait_for(task, 3) is None
 

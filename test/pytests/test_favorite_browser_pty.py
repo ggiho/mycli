@@ -134,3 +134,85 @@ def test_terminal_load_and_save_restore_screen_without_sql(tmp_path: Path, case:
             child.wait(timeout=3)
         os.close(master)
         os.close(slave)
+
+
+ROUNDTRIP_HARNESS = (
+    HARNESS.split('repl._one_iteration(cli,state)', 1)[0]
+    + r'''
+from mycli import favorite_browser
+captured={}
+def capture_browser(favorites, **kwargs):
+    browser=favorite_browser.FavoriteBrowser(favorites, **kwargs)
+    result=browser.application.run()
+    captured['search']=browser.search.text
+    captured['cursor']=browser.search.buffer.cursor_position
+    return result
+patch.setattr(favorite_browser,'browse_favorites',capture_browser)
+repl._one_iteration(cli,state)
+print('BROWSER_JSON '+json.dumps(captured),flush=True)
+text=cli.prompt_session.prompt(message='sql> ',default='SELECT 12345')
+print('EDIT_JSON '+json.dumps({'text':text,'sql_calls':executor.run.call_count}),flush=True)
+'''
+)
+
+
+def test_escape_backspace_and_query_prompt_roundtrip(tmp_path: Path) -> None:
+    import fcntl
+    import pty
+    import struct
+    import termios
+
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
+    env = dict(os.environ, PROMPT_TOOLKIT_NO_CPR='1', TERM='xterm-256color')
+    child = subprocess.Popen(
+        [sys.executable, '-c', ROUNDTRIP_HARNESS, str(tmp_path / 'config')],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env=env,
+        start_new_session=True,
+    )
+    output = bytearray()
+
+    def until(marker: bytes, offset: int = 0, timeout: float = 10) -> None:
+        deadline = time.monotonic() + timeout
+        while marker not in output[offset:]:
+            assert time.monotonic() < deadline, bytes(output)[-4000:]
+            if select.select([master], [], [], 0.01)[0]:
+                chunk = os.read(master, 65536)
+                if not chunk and child.poll() is not None:
+                    pytest.fail(f'child ended before {marker!r}: {bytes(output)[-4000:]!r}')
+                output.extend(chunk)
+
+    try:
+        until(b'qa>')
+        os.write(master, b'\\f\r')
+        until(b'SQL preview')
+        os.write(master, b'vars\rtimeout')
+        until(b'Parameters')
+        offset = len(output)
+        os.write(master, b'\x1b')
+        until(b'Search:', offset, 0.4)
+        os.write(master, b'\x7f\x7f\x7f\x7forders')
+        offset = len(output)
+        os.write(master, b'\x1b')
+        until(b'hjkl move', offset, 0.4)
+        os.write(master, b'\x1b')
+        until(b'BROWSER_JSON ')
+        until(b'sql>')
+        os.write(master, b'\x7f\x08\x1b[D\x1b[3~X\r')
+        until(b'EDIT_JSON ')
+        child.wait(timeout=5)
+        while select.select([master], [], [], 0.05)[0]:
+            output.extend(os.read(master, 65536))
+        browser = json.loads(bytes(output).split(b'BROWSER_JSON ', 1)[1].splitlines()[0])
+        result = json.loads(bytes(output).split(b'EDIT_JSON ', 1)[1].splitlines()[0])
+        assert browser == {'search': 'orders', 'cursor': 6}
+        assert result == {'text': 'SELECT 12X', 'sql_calls': 0}
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=3)
+        os.close(master)
+        os.close(slave)

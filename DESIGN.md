@@ -60,7 +60,8 @@
 - Browser/editor do not run favorite SQL. Load asks for named/numbered values; editor keeps the template raw.
 - Global-variable suggestions use lazy background metadata on a separate connection. Preserve active results/transactions; cache names only.
 - The typed filter stays the default; arrows/mouse explicitly select a full name. Metadata failure preserves free input.
-- Parameter forms use native template defaults for omitted named values. Errors retain fields; Back preserves favorites.
+- Parameter forms use native template defaults for omitted named values. Errors retain fields; Back preserves favorites and restores the opening pane/caret.
+- Modal Escape uses short decoder/prefix waits. Keep native arrow/Meta editing and the SQL editor multi-key timeout; verify shipped timing, not test-only overrides.
 
 ## Content voice
 - Short English action labels consistent with mycli: Search, SQL preview, Load, Edit, Save, Save as, Cancel.

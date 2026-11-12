@@ -21,7 +21,7 @@ from prompt_toolkit.key_binding.key_processor import KeyPressEvent
 from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.layout import Dimension, DynamicContainer, HSplit, Layout, ScrollablePane, VSplit, Window
 from prompt_toolkit.layout.containers import AnyContainer, ScrollOffsets
-from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.controls import FormattedTextControl, UIControl
 from prompt_toolkit.lexers import PygmentsLexer
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output import Output
@@ -32,6 +32,9 @@ from mycli.favorite_choices import is_global_variables_query
 from mycli.favorite_parameters import parameter_names, render_parameters
 from mycli.lexer import MyCliLexer
 from mycli.packages.special.favoritequeries import FavoriteQueries
+
+ESCAPE_INPUT_TIMEOUT = 0.05
+MODAL_KEY_TIMEOUT = 0.05
 
 
 @dataclass
@@ -69,6 +72,7 @@ class FavoriteBrowser:
         self.parameter_name = ''
         self.parameter_fields: list[tuple[str, TextArea]] = []
         self.parameter_extra: TextArea | None = None
+        self.parameter_return_focus: UIControl | None = None
         self.variable_names = variable_names
         self.variable_field: TextArea | None = None
         self.variable_candidates: list[str] = []
@@ -128,6 +132,9 @@ class FavoriteBrowser:
             input=input_stream,
             output=output_stream,
         )
+        self._editor_key_timeout = self.application.timeoutlen
+        self.application.ttimeoutlen = ESCAPE_INPUT_TIMEOUT
+        self.application.timeoutlen = MODAL_KEY_TIMEOUT
         self.search.buffer.on_text_changed += self._filter
         self._filter()
         if name:
@@ -187,6 +194,13 @@ class FavoriteBrowser:
 
     def _buttons(self, *buttons: Button) -> VSplit:
         return VSplit(list(buttons), padding=2)
+
+    def _show_screen(self, screen: str, target: AnyContainer | UIControl) -> None:
+        self.screen = screen
+        # Preserve editor key sequences without slowing modal Escape handling.
+        self.application.timeoutlen = self._editor_key_timeout if screen == 'edit' else MODAL_KEY_TIMEOUT
+        self.application.layout.focus(target)
+        self.application.invalidate()
 
     def _body(self) -> HSplit:
         status = Label(lambda: self.notice, style='class:output.status')
@@ -369,6 +383,8 @@ class FavoriteBrowser:
             return
         self.parameter_query = query
         self.parameter_name = self.filtered[self.index][0]
+        origin = self.application.layout.current_control
+        self.parameter_return_focus = origin if origin in (self.list_control, self.preview.control) else self.search.control
         self.parameter_fields = []
         self.variable_generation += 1
         self.variable_field = None
@@ -386,10 +402,9 @@ class FavoriteBrowser:
             self.parameter_extra = TextArea(height=1, multiline=False, prompt='Additional --key=value: ')
             self.parameter_extra.buffer.accept_handler = self._accept_parameter
         self.notice = ''
-        self.screen = 'parameters'
         first = self.parameter_fields[0][1] if self.parameter_fields else self.parameter_extra
         assert first is not None
-        self.application.layout.focus(first)
+        self._show_screen('parameters', first)
         if len(names) == 1 and not dynamic and self.variable_names is not None and is_global_variables_query(query):
             self.variable_field = first
             first.buffer.on_text_changed += self._filter_variables
@@ -496,9 +511,9 @@ class FavoriteBrowser:
         self.application.exit(result=FavoriteOutcome(query=query))
 
     def back_to_browser(self) -> None:
-        self.screen = 'browse'
         self.notice = ''
-        self.application.layout.focus(self.list_control)
+        self.application.editing_mode = EditingMode.EMACS
+        self._show_screen('browse', self.parameter_return_focus or self.search.control)
 
     def edit_selected(self) -> None:
         if self.filtered:
@@ -512,18 +527,15 @@ class FavoriteBrowser:
         self.back_to_editor()
 
     def back_to_editor(self) -> None:
-        self.screen = 'edit'
         self.application.editing_mode = self.editing_mode
         self.application.vi_state.input_mode = InputMode.INSERT
-        self.application.layout.focus(self.editor)
-        self.application.invalidate()
+        self._show_screen('edit', self.editor)
 
     def save_as(self) -> None:
         self.new_name.text = ''
-        self.screen = 'save_as'
         self.notice = ''
         self.application.editing_mode = EditingMode.EMACS
-        self.application.layout.focus(self.new_name)
+        self._show_screen('save_as', self.new_name)
 
     def save_named(self) -> None:
         name = self.new_name.text.strip()
@@ -533,8 +545,7 @@ class FavoriteBrowser:
         self.notice = ''
         if self.favorites.get(name) is not None:
             self.pending_name = name
-            self.screen = 'overwrite'
-            self.application.layout.focus(self.replace_button)
+            self._show_screen('overwrite', self.replace_button)
         else:
             self._save(name)
 
@@ -566,8 +577,7 @@ class FavoriteBrowser:
 
     def cancel(self) -> None:
         if self.screen != 'browse' and self.editor.text != self.original_sql:
-            self.screen = 'discard'
-            self.application.layout.focus(self.continue_button)
+            self._show_screen('discard', self.continue_button)
         else:
             self.application.exit()
 
