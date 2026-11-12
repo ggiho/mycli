@@ -70,6 +70,9 @@ Features
 * Support for multiline queries.
 * Favorite queries with positional or named parameters using [Jinja](https://jinja.palletsprojects.com/en/stable/). Save a query using
   `/fs <alias> <query>` and execute it with `/f <alias>` or `/f <alias> --key=value`.
+* In this fork, `/f` opens a searchable favorite list with a full SQL preview;
+  `/fe [name]` opens its editor with Save, Save as and Cancel. See the
+  [favorite browser guide](doc/favorite-browser.md).
 * Timing of sql statements and table rendering.
 * Log every query and its results to a file (disabled by default).
 * Pretty print tabular data (with colors!).

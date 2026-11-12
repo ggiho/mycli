@@ -1978,3 +1978,8 @@ def test_inside_quotes_backtick_03():
     """
     text = 'select ``'
     assert is_inside_quotes(text, -2) is False
+
+
+@pytest.mark.parametrize('text', [r'\fe ', r'\fe rep', '/fe '])
+def test_favorite_editor_completes_existing_names(text: str) -> None:
+    assert suggest_special(text) == [{'type': 'favoritequery'}]

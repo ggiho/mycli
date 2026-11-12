@@ -803,7 +803,7 @@ def suggest_special(text: str) -> list[dict[str, Any]]:
     if cmd in ["\\f", "/f"]:
         return suggest_favorite_query_with_template(text, _arg)
 
-    if cmd in ["\\fs", "/fs", "\\fd", "/fd"]:
+    if cmd in ["\\fs", "/fs", "\\fd", "/fd", r'\fe', '/fe']:
         return [{"type": "favoritequery"}]
 
     if cmd in ("\\t", "/t"):

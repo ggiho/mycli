@@ -2564,3 +2564,130 @@ def test_a_declined_query_leaves_the_last_result_alone(monkeypatch: pytest.Monke
     repl_mode._one_iteration(cli, repl_mode.ReplState(), 'drop table t')
 
     assert repl_mode.special.get_last_result() == (['id'], [(1,)])
+
+
+@pytest.mark.parametrize(
+    ('text', 'expected'),
+    [
+        (r'\f', (False, '')),
+        ('/f;', (False, '')),
+        (r'\fe', (True, '')),
+        (r'\fe report;', (True, 'report')),
+        ('/fe 한글', (True, '한글')),
+        (r'\f report', None),
+        ('SELECT 1', None),
+        (r'\feature', None),
+        ('\\fe report; SELECT 1', None),
+        (r'\fe report extra', None),
+    ],
+)
+def test_favorite_browser_request_is_single_command(text: str, expected: tuple[bool, str] | None) -> None:
+    assert repl_mode._favorite_browser_request(text) == expected
+
+
+@pytest.mark.parametrize('text,edit,name', [(r'\f', False, ''), (r'\fe', True, ''), (r'\fe report', True, 'report')])
+def test_interactive_favorite_browser_loads_without_database_use(monkeypatch: pytest.MonkeyPatch, text: str, edit: bool, name: str) -> None:
+    from unittest.mock import Mock
+
+    from mycli import favorite_browser
+
+    patch_repl_runtime_defaults(monkeypatch)
+    monkeypatch.setattr(repl_mode.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(repl_mode.sys.stdout, 'isatty', lambda: True)
+    monkeypatch.setattr(iocommands, 'tee_file', None)
+    executor = SimpleNamespace(conn=Mock(), run=Mock(), dbname='db')
+    cli = make_repl_cli(executor)
+    cli.prompt_session = FakePromptSession([text])
+    cli.result_viewer = SimpleNamespace(release_result=Mock())
+    browser = Mock(return_value=favorite_browser.FavoriteOutcome(query="SELECT $1, '{{ kv.name }}'"))
+    monkeypatch.setattr(favorite_browser, 'browse_favorites', browser)
+    monkeypatch.setattr(iocommands.FavoriteQueries, 'instance', object(), raising=False)
+    state = repl_mode.ReplState()
+    assert repl_mode._one_iteration(cli, state)
+    assert browser.call_args.kwargs['edit'] == edit and browser.call_args.kwargs['name'] == name
+    assert state.buffer_text == "SELECT $1, '{{ kv.name }}';"
+    executor.run.assert_not_called()
+    executor.conn.cursor.assert_not_called()
+    cli.result_viewer.release_result.assert_not_called()
+    assert cli.query_history == []
+
+
+def test_favorite_save_refreshes_aliases_without_database_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import Mock
+
+    from mycli import favorite_browser
+
+    patch_repl_runtime_defaults(monkeypatch)
+    monkeypatch.setattr(repl_mode.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(repl_mode.sys.stdout, 'isatty', lambda: True)
+    monkeypatch.setattr(iocommands, 'tee_file', None)
+    executor = SimpleNamespace(conn=Mock(), run=Mock(), dbname='db')
+    cli = make_repl_cli(executor)
+    cli.prompt_session = FakePromptSession([r'\fe report'])
+    cli.register_favorite_commands = Mock()
+    monkeypatch.setattr(
+        favorite_browser, 'browse_favorites', Mock(return_value=favorite_browser.FavoriteOutcome(message='report: Saved.', saved=True))
+    )
+    monkeypatch.setattr(iocommands.FavoriteQueries, 'instance', object(), raising=False)
+    state = repl_mode.ReplState()
+    assert repl_mode._one_iteration(cli, state)
+    assert state.buffer_text is None and cli.echo_calls == ['report: Saved.']
+    cli.register_favorite_commands.assert_called_once_with()
+    assert cli.refresh_calls == []
+    executor.run.assert_not_called()
+
+
+@pytest.mark.parametrize('text,interactive', [(r'\f report', True), (r'\f', False)])
+def test_named_favorite_and_programmatic_list_keep_existing_execution(
+    monkeypatch: pytest.MonkeyPatch, text: str, interactive: bool
+) -> None:
+    from unittest.mock import Mock
+
+    from mycli import favorite_browser
+
+    patch_repl_runtime_defaults(monkeypatch)
+    executor = SimpleNamespace(conn=FakeConnection(), run=Mock(return_value=iter([SQLResult(status='ok')])), dbname='db')
+    cli = make_repl_cli(executor)
+    cli.prompt_session = FakePromptSession([text])
+    browser = Mock()
+    monkeypatch.setattr(favorite_browser, 'browse_favorites', browser)
+    repl_mode._one_iteration(cli, repl_mode.ReplState(), text=None if interactive else text)
+    executor.run.assert_called_once_with(text)
+    browser.assert_not_called()
+
+
+def test_favorite_terminal_error_returns_to_prompt_without_sql(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import Mock
+
+    from mycli import favorite_browser
+
+    patch_repl_runtime_defaults(monkeypatch)
+    monkeypatch.setattr(repl_mode.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(repl_mode.sys.stdout, 'isatty', lambda: True)
+    monkeypatch.setattr(iocommands, 'tee_file', None)
+    executor = SimpleNamespace(conn=Mock(), run=Mock(), dbname='db')
+    cli = make_repl_cli(executor)
+    cli.prompt_session = FakePromptSession([r'\f'])
+    monkeypatch.setattr(favorite_browser, 'browse_favorites', Mock(side_effect=OSError('terminal unavailable')))
+    monkeypatch.setattr(iocommands.FavoriteQueries, 'instance', object(), raising=False)
+    assert not repl_mode._one_iteration(cli, repl_mode.ReplState())
+    assert cli.echo_calls == ['Could not open favorites: terminal unavailable']
+    executor.run.assert_not_called()
+
+
+def test_redirected_stdout_keeps_bare_favorite_text_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import Mock
+
+    from mycli import favorite_browser
+
+    patch_repl_runtime_defaults(monkeypatch)
+    monkeypatch.setattr(repl_mode.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(repl_mode.sys.stdout, 'isatty', lambda: False)
+    executor = SimpleNamespace(conn=FakeConnection(), run=Mock(return_value=iter([SQLResult(status='listed')])), dbname='db')
+    cli = make_repl_cli(executor)
+    cli.prompt_session = FakePromptSession([r'\f'])
+    browser = Mock()
+    monkeypatch.setattr(favorite_browser, 'browse_favorites', browser)
+    repl_mode._one_iteration(cli, repl_mode.ReplState())
+    browser.assert_not_called()
+    executor.run.assert_called_once_with(r'\f')

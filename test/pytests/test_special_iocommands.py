@@ -1749,3 +1749,18 @@ def test_open_external_editor_strips_invisible_characters(monkeypatch, tmp_path:
     query, message = iocommands.open_external_editor(filename=str(filename))
 
     assert query == "select 1, 'kept\u00a0here'"
+
+
+@pytest.mark.parametrize('command', [r'\fe', r'\fe demo', '/fe demo'])
+def test_favorite_editor_in_scripts_does_not_execute_or_save(monkeypatch: pytest.MonkeyPatch, command: str) -> None:
+    from unittest.mock import Mock
+
+    from mycli.packages.special.main import execute
+
+    cur = Mock()
+    favorites = Mock()
+    monkeypatch.setattr(iocommands.FavoriteQueries, 'instance', favorites, raising=False)
+    results = list(execute(cur, command))
+    assert 'interactive prompt' in results[0].status
+    cur.execute.assert_not_called()
+    favorites.save.assert_not_called()

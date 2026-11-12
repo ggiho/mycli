@@ -4,6 +4,8 @@ from collections.abc import Mapping
 import logging
 import os
 import re
+import stat
+import tempfile
 from typing import IO, Any
 
 from configobj import ConfigObjError
@@ -70,7 +72,7 @@ Examples:
     # Reload favorite queries from the configuration files.
     > /favorite reload
 
-    See also the alternative interface /f, /fs, /fd.'''
+    See also the alternative interface /f, /fe, /fs, /fd.'''
 
 favorite_query_template_environment = SandboxedEnvironment(autoescape=False)
 favorite_query_variable_pattern = re.compile(r'^[A-Za-z_][A-Za-z0-9_-]*$')
@@ -145,7 +147,7 @@ Examples:
     # When multi-line mode is on, pressing Return twice is needed to save.
     # This supports multi-statement favorites.
 
-    # List all favorite queries.
+    # Browse favorites interactively; scripts print the text list.
     > /f
     ╒═══════════╤══════════════════════════════════════════════════╕
     │ Name      │ Query                                            │
@@ -178,6 +180,9 @@ Examples:
     # Delete a favorite query.
     > /fd simple
     simple: Deleted.
+
+    # Edit a favorite in the interactive editor (omit the name to select).
+    > /fe simple
 
     See also the alternative interface /favorite.
 """
@@ -305,6 +310,34 @@ Examples:
             config[self.section_name] = {}
         config[self.section_name][name] = query
 
+    def _write_config(self, config: Any) -> None:
+        """Stage persistent saves before replacing the original configuration."""
+        filename = getattr(config, 'filename', None)
+        if not filename:
+            config.write()
+            return
+        # Follow a managed symlink rather than replacing the link itself.
+        target = os.path.realpath(os.path.expanduser(filename))
+        try:
+            mode = stat.S_IMODE(os.stat(target).st_mode)
+        except FileNotFoundError:
+            mode = 0o600
+        staged = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix='.mycli-favorites-', dir=os.path.dirname(target), delete=False) as output:
+                staged = output.name
+                config.write(output)
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(staged, mode)
+            os.replace(staged, target)
+        finally:
+            if staged is not None:
+                try:
+                    os.unlink(staged)
+                except FileNotFoundError:
+                    pass
+
     def list(self) -> list[str | None]:
         return [self._clean_query(x) for x in self.config.get(self.section_name, {})]
 
@@ -319,7 +352,7 @@ Examples:
         previous_query = config.get(self.section_name, {}).get(name, MISSING)
         self._set_query(config, name, query)
         try:
-            config.write()
+            self._write_config(config)
         except Exception:
             if previous_query is MISSING:
                 del config[self.section_name][name]

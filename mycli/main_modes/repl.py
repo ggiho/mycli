@@ -854,6 +854,17 @@ def _build_prompt_session(
             mycli.prompt_session.app.ttimeoutlen = mycli.emacs_ttimeoutlen
 
 
+def _favorite_browser_request(text: str) -> tuple[bool, str] | None:
+    """Recognize a single favorite UI command, without importing its widgets."""
+    parts = text.strip().removesuffix(special.get_current_delimiter()).rstrip().split(maxsplit=1)
+    if not parts or parts[0] not in (r'\f', '/f', r'\fe', '/fe') or len(sqlparse.split(text)) != 1:
+        return None
+    if parts[0] in (r'\f', '/f'):
+        return (False, '') if len(parts) == 1 else None
+    name = parts[1].strip() if len(parts) == 2 else ''
+    return (True, name) if len(name.split()) <= 1 else None
+
+
 def _one_iteration(
     mycli: 'MyCli',
     state: ReplState,
@@ -862,6 +873,7 @@ def _one_iteration(
     """Read and run one line. Return True if it succeeded, False if it failed or never ran."""
     sqlexecute = mycli.sqlexecute
     assert sqlexecute is not None
+    interactive_input = text is None
 
     inputhook = partial(_keepalive_hook, mycli) if mycli.keepalive_ticks and mycli.keepalive_ticks >= 1 else None
 
@@ -969,6 +981,42 @@ def _one_iteration(
             mycli.logger.error('traceback: %r', traceback.format_exc())
             mycli.echo(str(e), err=True, fg='red')
             return False
+
+    request = _favorite_browser_request(text) if interactive_input and polars_pipeline is None else None
+    if (
+        request is not None
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and not special.is_redirected()
+        and special.iocommands.tee_file is None
+        and not mycli.logfile
+    ):
+        from mycli.favorite_browser import browse_favorites
+        from mycli.packages.special.favoritequeries import FavoriteQueries
+        from mycli.packages.special.iocommands import _terminate_favorite_eval_query
+
+        edit, name = request
+        try:
+            outcome = browse_favorites(
+                FavoriteQueries.instance,
+                style=style_factory_ptoolkit(mycli.syntax_style, mycli.cli_style),
+                editing_mode=EditingMode.VI if mycli.key_bindings == 'vi' else EditingMode.EMACS,
+                edit=edit,
+                name=name,
+            )
+        except (KeyboardInterrupt, EOFError):
+            return True
+        except (OSError, RuntimeError) as error:
+            mycli.echo(f'Could not open favorites: {error}', err=True, fg='red')
+            return False
+        if outcome is not None:
+            if outcome.query is not None:
+                state.buffer_text = _terminate_favorite_eval_query(outcome.query)
+            if outcome.saved:
+                mycli.register_favorite_commands()
+            if outcome.message:
+                mycli.echo(outcome.message)
+        return True
 
     if mycli.sandbox_mode and not is_sandbox_allowed(text):
         mycli.echo(

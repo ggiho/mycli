@@ -442,10 +442,10 @@ def favorite(arg: str, cur: Cursor | None = None, **_) -> Iterable[SQLResult]:
 @special_command(
     "\\f",
     "/f [name [args..] [--key=value]]",
-    "List or execute favorite queries.",
+    "Browse favorites in the interactive prompt, or execute by name.",
     arg_type=ArgType.PARSED_QUERY,
     case_sensitive=True,
-    completion_snippet='list or run favorite queries',
+    completion_snippet='browse or run favorite queries',
 )
 def execute_favorite_query(cur: Cursor, arg: str, **_) -> Generator[SQLResult, None, None]:
     if arg == "":
@@ -638,6 +638,17 @@ def _save_favorite_query(arg: str, usage: str) -> list[SQLResult]:
 
     FavoriteQueries.instance.save(name, query)
     return [SQLResult(status="Saved.")]
+
+
+@special_command(
+    r'\fe',
+    '/fe [name]',
+    'Edit a favorite query in the interactive prompt.',
+    case_sensitive=True,
+    completion_snippet='edit favorite queries',
+)
+def edit_favorite_query(arg: str = '', **_) -> list[SQLResult]:
+    return [SQLResult(status=r'\fe is available in the interactive prompt. Use \favorite edit name for an external editor.')]
 
 
 def _edit_favorite_query(name: str) -> list[SQLResult]:

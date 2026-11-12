@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 import logging
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -610,3 +611,50 @@ def test_delete_restores_runtime_query_after_write_failure() -> None:
         favorites.delete('existing')
 
     assert config['favorite_queries'] == {'existing': 'select 1'}
+
+
+@pytest.mark.parametrize('failure', ['write', 'replace'])
+def test_failed_persistent_save_preserves_file_and_removes_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from configobj import ConfigObj
+
+    path = tmp_path / 'myclirc'
+    path.write_text('[main]\nunrelated = keep\n[favorite_queries]\nreport = SELECT 1\n', encoding='utf-8')
+    before = path.read_bytes()
+    favorites = FavoriteQueries(ConfigObj(str(path)), str(path))
+    if failure == 'write':
+
+        def partial_write(_config: ConfigObj, outfile: IO[bytes] | None = None, **_kwargs: object) -> None:
+            if outfile is None:
+                path.write_bytes(b'partial configuration')
+            else:
+                outfile.write(b'partial configuration')
+            raise OSError('disk full')
+
+        monkeypatch.setattr(ConfigObj, 'write', partial_write)
+    else:
+        monkeypatch.setattr(favoritequeries_module.os, 'replace', lambda *_args: (_ for _ in ()).throw(OSError('replace failed')))
+    with pytest.raises(OSError):
+        favorites.save('report', 'SELECT 23')
+    assert path.read_bytes() == before
+    assert favorites.get('report') == 'SELECT 1'
+    assert list(tmp_path.glob('.mycli-favorites-*')) == []
+
+
+def test_persistent_save_keeps_symlink_and_file_permissions(tmp_path: Path) -> None:
+    import os
+
+    from configobj import ConfigObj
+
+    if os.name == 'nt':
+        pytest.skip('POSIX symlink and permission contract')
+    real = tmp_path / 'managed-config'
+    real.write_text('[main]\nunrelated = keep\n[favorite_queries]\nreport = SELECT 1\n', encoding='utf-8')
+    real.chmod(0o600)
+    link = tmp_path / 'myclirc'
+    link.symlink_to(real)
+    favorites = FavoriteQueries(ConfigObj(str(link)), str(link))
+    favorites.save('report', 'SELECT 23')
+    assert link.is_symlink() and real.stat().st_mode & 0o777 == 0o600
+    assert ConfigObj(str(real))['favorite_queries']['report'] == 'SELECT 23'
+    assert ConfigObj(str(real))['main']['unrelated'] == 'keep'
+    assert list(tmp_path.glob('.mycli-favorites-*')) == []
