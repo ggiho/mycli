@@ -241,8 +241,8 @@ login_path_as_host = False
 # and using normal tabular format otherwise. (This applies to statements terminated by ; or \G.)
 auto_vertical_output = False
 
-# Lay out single-column results as an ls-style grid of columns on screen, when
-# they are shown in a boxed table format and every value fits on one line
+# Lay out single-column results in at most three separated display columns,
+# in column-major order, when shown in a boxed format and values fit on one line
 # without ambiguous blanks. Redirected output is never laid out this way.
 grid_output = True
 

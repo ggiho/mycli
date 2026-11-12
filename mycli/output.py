@@ -56,7 +56,7 @@ GRID_FORMATS = frozenset({
 })
 # Single-column results in these formats get a box-drawing frame; the rest use ASCII.
 UNICODE_GRID_FORMATS = frozenset({'psql_unicode', 'fancy_grid', 'double', 'mysql_unicode', 'mysql_heavy'})
-GRID_GAP = 2
+GRID_GAP = 5
 # top-left, top-right, middle-left, middle-right, bottom-left, bottom-right, horizontal, vertical
 ASCII_FRAME = ('+', '+', '+', '+', '+', '+', '-', '|')
 UNICODE_FRAME = ('┌', '┐', '├', '┤', '└', '┘', '─', '│')
@@ -77,7 +77,7 @@ def format_as_grid(
     style=None,
     unicode_frame: bool = False,
 ) -> list[str] | None:
-    """Lay out one column's values column-major, like `ls -C`, in a framed box under the header.
+    """Lay out one column in at most three separated display columns, in column-major order.
 
     Returns None when the values cannot be shown as plain text on one line each
     (bytes, newlines, tabs), when a value's extent would be ambiguous between
@@ -108,7 +108,7 @@ def format_as_grid(
     if header_width > inner_width:
         return None
     # Every column is at least min(widths) wide, which bounds how many can fit.
-    max_cols = min(len(values), (inner_width + GRID_GAP) // (min(widths) + GRID_GAP))
+    max_cols = min(3, len(values), (inner_width + GRID_GAP) // (min(widths) + GRID_GAP))
     for ncols in range(max_cols, 1, -1):
         nrows = -(-len(values) // ncols)
         ncols = -(-len(values) // nrows)  # drop columns that would be empty
@@ -134,18 +134,18 @@ def format_as_grid(
         framed(_style_text(Token.Output.Header, header, style), header_width),
         _style_text(Token.Output.TableSeparator, mid_left + rule + mid_right, style),
     ]
+    # Preserve the double-space signal that marks display grids for legacy pagers.
+    separator = _style_text(Token.Output.TableSeparator, f"  {vertical}  ", style)
     for r in range(nrows):
         cells = []
-        line_width = 0
         for c in range(ncols):
             i = c * nrows + r
-            if i >= len(values):
-                break
-            cell = _style_text(Token.Output.Null, values[i], style) if i in nulls else values[i]
-            pad = col_widths[c] - widths[i] + GRID_GAP if c < ncols - 1 else 0
-            cells.append(cell + ' ' * pad)
-            line_width += widths[i] + pad
-        lines.append(framed(''.join(cells), line_width))
+            if i < len(values):
+                cell = _style_text(Token.Output.Null, values[i], style) if i in nulls else values[i]
+                cells.append(cell + ' ' * (col_widths[c] - widths[i]))
+            else:
+                cells.append(' ' * col_widths[c])
+        lines.append(framed(separator.join(cells), grid_width))
     lines.append(_style_text(Token.Output.TableSeparator, bottom_left + rule + bottom_right, style))
     return lines
 

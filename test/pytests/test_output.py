@@ -615,24 +615,24 @@ def test_format_sqlresult_keeps_table_when_first_line_fits_width() -> None:
 def test_format_as_grid_fills_columns_top_to_bottom_like_ls() -> None:
     rows = [(name,) for name in ['alpha', 'b', 'charlie', 'd', 'echo']]
 
-    # Three columns of two rows need 5 + 2 + 7 + 2 + 4 = 20 cells plus 4 for the
+    # Three columns of two rows need 5 + 5 + 7 + 5 + 4 = 26 cells plus 4 for the
     # frame; anything narrower falls back to two columns of three rows.
-    assert output_module.format_as_grid('Database', rows, 24, '<null>') == [
-        '+----------------------+',
-        '| Database             |',
-        '+----------------------+',
-        '| alpha  charlie  echo |',
-        '| b      d             |',
-        '+----------------------+',
+    assert output_module.format_as_grid('Database', rows, 30, '<null>') == [
+        '+----------------------------+',
+        '| Database                   |',
+        '+----------------------------+',
+        '| alpha  |  charlie  |  echo |',
+        '| b      |  d        |       |',
+        '+----------------------------+',
     ]
-    assert output_module.format_as_grid('Database', rows, 23, '<null>') == [
-        '+---------------+',
-        '| Database      |',
-        '+---------------+',
-        '| alpha    d    |',
-        '| b        echo |',
-        '| charlie       |',
-        '+---------------+',
+    assert output_module.format_as_grid('Database', rows, 29, '<null>') == [
+        '+------------------+',
+        '| Database         |',
+        '+------------------+',
+        '| alpha    |  d    |',
+        '| b        |  echo |',
+        '| charlie  |       |',
+        '+------------------+',
     ]
 
 
@@ -641,18 +641,18 @@ def test_format_as_grid_widens_the_frame_for_a_long_header() -> None:
         '+--------------+',
         '| Tables_in_db |',
         '+--------------+',
-        '| a  b         |',
+        '| a  |  b      |',
         '+--------------+',
     ]
 
 
 def test_format_as_grid_uses_a_box_drawing_frame_for_unicode_formats() -> None:
     assert output_module.format_as_grid('h', [('a',), ('b',)], 80, '<null>', unicode_frame=True) == [
-        '┌──────┐',
-        '│ h    │',
-        '├──────┤',
-        '│ a  b │',
-        '└──────┘',
+        '┌─────────┐',
+        '│ h       │',
+        '├─────────┤',
+        '│ a  │  b │',
+        '└─────────┘',
     ]
 
 
@@ -663,19 +663,25 @@ def test_format_as_grid_styles_header_separators_and_nulls() -> None:
     lines = output_module.format_as_grid('h', [('a',), (None,)], 80, '<null>', style=GridStyle)
 
     assert lines is not None
-    assert [strip_ansi(line) for line in lines] == ['+-----------+', '| h         |', '+-----------+', '| a  <null> |', '+-----------+']
+    assert [strip_ansi(line) for line in lines] == [
+        '+--------------+',
+        '| h            |',
+        '+--------------+',
+        '| a  |  <null> |',
+        '+--------------+',
+    ]
     assert all(line != strip_ansi(line) for line in lines)
 
 
 def test_format_as_grid_returns_none_when_two_columns_do_not_fit() -> None:
     rows = [('x' * 10,), ('y' * 10,)]
-    assert output_module.format_as_grid('h', rows, 25, '<null>') is None
-    assert output_module.format_as_grid('h', rows, 26, '<null>') == [
-        '+------------------------+',
-        '| h                      |',
-        '+------------------------+',
-        '| xxxxxxxxxx  yyyyyyyyyy |',
-        '+------------------------+',
+    assert output_module.format_as_grid('h', rows, 28, '<null>') is None
+    assert output_module.format_as_grid('h', rows, 29, '<null>') == [
+        '+---------------------------+',
+        '| h                         |',
+        '+---------------------------+',
+        '| xxxxxxxxxx  |  yyyyyyyyyy |',
+        '+---------------------------+',
     ]
 
 
@@ -683,7 +689,7 @@ def test_format_as_grid_measures_wide_characters_and_shows_missing_values() -> N
     lines = output_module.format_as_grid('h', [('한글',), (None,), ('a',)], 80, '<null>')
 
     assert lines is not None
-    assert lines[3] == '| 한글  <null>  a |'
+    assert lines[3] == '| 한글  |  <null>  |  a |'
     assert len({get_cwidth(line) for line in lines}) == 1
 
 
@@ -697,11 +703,11 @@ def test_format_sqlresult_lays_out_single_column_as_grid_when_width_is_given() -
     result = SQLResult(header=['Database'], rows=[('a',), ('b',), ('c',)])
 
     assert [strip_ansi(line) for line in OutputMixin.format_sqlresult(cli, result, grid_width=80)] == [
-        '+----------+',
-        '| Database |',
-        '+----------+',
-        '| a  b  c  |',
-        '+----------+',
+        '+---------------+',
+        '| Database      |',
+        '+---------------+',
+        '| a  |  b  |  c |',
+        '+---------------+',
     ]
     assert cli.main_formatter.calls == []
 
@@ -749,7 +755,7 @@ def test_format_sqlresult_materializes_cursor_rows_for_grid(monkeypatch: pytest.
     monkeypatch.setattr(output_module, 'Cursor', FakeCursorBase)
     result = SQLResult(header=['Database'], rows=cast(Any, rows))
 
-    assert strip_ansi(list(OutputMixin.format_sqlresult(cli, result, grid_width=80))[3]) == '| a  b     |'
+    assert strip_ansi(list(OutputMixin.format_sqlresult(cli, result, grid_width=80))[3]) == '| a  |  b  |'
 
 
 def test_get_reserved_space_caps_ratio(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -781,7 +787,7 @@ def test_format_as_grid_returns_none_for_an_empty_null_string() -> None:
 def test_format_as_grid_keeps_single_spaces_inside_values() -> None:
     lines = output_module.format_as_grid('h', [('Kim Min Su',), ('b',)], 80, '<null>')
     assert lines is not None
-    assert lines[3] == '| Kim Min Su  b |'
+    assert lines[3] == '| Kim Min Su  |  b |'
 
 
 def test_format_sqlresult_formats_rows_kept_with_a_description_like_the_cursor() -> None:
@@ -795,3 +801,20 @@ def test_format_sqlresult_formats_rows_kept_with_a_description_like_the_cursor()
     _, kwargs = cli.main_formatter.calls[-1]
     assert kwargs['column_types'] == [int, str]
     assert kwargs['colalign'] == ['right', 'left']
+
+
+@pytest.mark.parametrize('width', [40, 80, 160])
+def test_list_grid_limits_density_and_keeps_separators_aligned(width: int) -> None:
+    names = ['name_' + str(i).zfill(2) for i in range(8)]
+    lines = output_module.format_as_grid('Database', [(v,) for v in names], width, '<null>')
+    assert lines is not None
+    body = [strip_ansi(line) for line in lines[3:-1]]
+    cells = [line[2:-2].split('  |  ') for line in body]
+    assert len(cells) == 3
+    assert all(len(row) == 3 for row in cells)
+    restored = [cells[r][c].strip() for c in range(3) for r in range(3) if cells[r][c].strip()]
+    assert restored == names
+    positions = [[i for i, char in enumerate(line) if char == '|'] for line in body]
+    assert all(p == positions[0] for p in positions)
+    assert len({get_cwidth(strip_ansi(line)) for line in lines}) == 1
+    assert get_cwidth(strip_ansi(lines[0])) <= width
