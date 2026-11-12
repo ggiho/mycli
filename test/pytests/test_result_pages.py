@@ -259,3 +259,25 @@ def test_mysql_keeps_transactions_and_non_base_tables_buffered(autocommit, in_tr
     meta.fetchone.return_value = ('orders', definition)
     assert mysql_stream(SimpleNamespace(conn=connection), 'SELECT * FROM orders') is None
     connection.cursor.return_value.execute.assert_not_called()
+
+
+@pytest.mark.parametrize('value,always', [('가' * 50, False), ('short', True)])
+def test_inline_fit_uses_terminal_cells_and_respects_always(tmp_path, monkeypatch, value, always):
+    from types import SimpleNamespace
+
+    from mycli import result_viewer as module
+
+    launched = []
+    monkeypatch.setattr(module.shutil, 'get_terminal_size', lambda: os.terminal_size((80, 24)))
+    monkeypatch.setattr(module.subprocess, 'Popen', lambda *args: launched.append(args) or SimpleNamespace(poll=lambda: 0, wait=lambda: 0))
+    if always:
+        monkeypatch.setenv('SQL_VIEWER_ALWAYS', '1')
+    else:
+        monkeypatch.delenv('SQL_VIEWER_ALWAYS', raising=False)
+    viewer = ResultViewer(tmp_path / 'unused')
+    try:
+        viewer.begin(PagedRows(iter([(value,)]), [('v',)], lambda: None, lambda: None, live=False))
+        viewer.show()
+        assert len(launched) == 1
+    finally:
+        viewer.close()
