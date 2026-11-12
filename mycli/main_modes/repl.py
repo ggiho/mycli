@@ -992,10 +992,14 @@ def _one_iteration(
         and not mycli.logfile
     ):
         from mycli.favorite_browser import browse_favorites
+        from mycli.favorite_choices import VariableNameCache
         from mycli.packages.special.favoritequeries import FavoriteQueries
         from mycli.packages.special.iocommands import _terminate_favorite_eval_query
 
         edit, name = request
+        choices = getattr(mycli, '_favorite_variable_names', None)
+        if choices is None:
+            choices = mycli._favorite_variable_names = VariableNameCache()
         try:
             outcome = browse_favorites(
                 FavoriteQueries.instance,
@@ -1003,6 +1007,7 @@ def _one_iteration(
                 editing_mode=EditingMode.VI if mycli.key_bindings == 'vi' else EditingMode.EMACS,
                 edit=edit,
                 name=name,
+                variable_names=partial(choices.get, sqlexecute.conn) if sqlexecute.conn is not None else None,
             )
         except (KeyboardInterrupt, EOFError):
             return True

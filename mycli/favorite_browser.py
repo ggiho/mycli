@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
+import threading
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
@@ -26,6 +28,7 @@ from prompt_toolkit.output import Output
 from prompt_toolkit.styles import BaseStyle, Style, merge_styles
 from prompt_toolkit.widgets import Button, Frame, Label, TextArea
 
+from mycli.favorite_choices import is_global_variables_query
 from mycli.favorite_parameters import parameter_names, render_parameters
 from mycli.lexer import MyCliLexer
 from mycli.packages.special.favoritequeries import FavoriteQueries
@@ -47,6 +50,7 @@ class FavoriteBrowser:
         editing_mode: EditingMode = EditingMode.EMACS,
         edit: bool = False,
         name: str = '',
+        variable_names: Callable[[], list[str]] | None = None,
         input_stream: Input | None = None,
         output_stream: Output | None = None,
     ) -> None:
@@ -65,6 +69,20 @@ class FavoriteBrowser:
         self.parameter_name = ''
         self.parameter_fields: list[tuple[str, TextArea]] = []
         self.parameter_extra: TextArea | None = None
+        self.variable_names = variable_names
+        self.variable_field: TextArea | None = None
+        self.variable_candidates: list[str] = []
+        self.variable_matches: list[str] = []
+        self.variable_index: int | None = None
+        self.variable_loading = False
+        self.variable_error = False
+        self.variable_generation = 0
+        self.variable_control = FormattedTextControl(
+            self._variable_text,
+            show_cursor=False,
+            get_cursor_position=lambda: Point(0, 0 if self.variable_index is None else self.variable_index + 1),
+        )
+        self.variable_window = Window(self.variable_control, scroll_offsets=ScrollOffsets(top=1, bottom=1))
         self.search = TextArea(
             height=1,
             multiline=False,
@@ -203,15 +221,30 @@ class FavoriteBrowser:
             fields = [field for _key, field in self.parameter_fields]
             if self.parameter_extra is not None:
                 fields.append(self.parameter_extra)
+            choices: list[AnyContainer] = []
+            if self.variable_field is not None:
+                choices = [
+                    Frame(
+                        self.variable_window,
+                        title=f'Variable names · {len(self.variable_matches)}/{len(self.variable_candidates)}',
+                        height=Dimension(max=max(4, min(9, len(self.variable_matches) + 3))),
+                    )
+                ]
+            help_text = (
+                '↑↓ pick · Enter use selected/typed filter · Esc back'
+                if choices
+                else 'Enter next/load · Tab actions · Esc back · blank named inputs use defaults'
+            )
             return HSplit([
                 Frame(
                     ScrollablePane(HSplit(fields), show_scrollbar=len(fields) > 10),
                     title=f'Parameters · {self.parameter_name}',
                     height=Dimension(max=min(12, len(fields) + 2)),
                 ),
+                *choices,
                 Frame(self.preview, title='Template'),
                 status,
-                Label('Enter next/load · Tab actions · Esc back · blank named inputs use defaults'),
+                Label(help_text),
                 self._buttons(self.parameter_load_button, self.parameter_back_button),
             ])
         footer: list[AnyContainer]
@@ -240,6 +273,19 @@ class FavoriteBrowser:
             )
         )
         navigation = Condition(lambda: self.screen == 'browse' and not self._searching())
+        choosing_variable = Condition(
+            lambda: (
+                self.screen == 'parameters' and self.variable_field is not None and self.application.layout.has_focus(self.variable_field)
+            )
+        )
+
+        @kb.add('down', filter=choosing_variable)
+        def next_variable(_event: KeyPressEvent) -> None:
+            self._move_variable(1)
+
+        @kb.add('up', filter=choosing_variable)
+        def previous_variable(_event: KeyPressEvent) -> None:
+            self._move_variable(-1)
 
         @kb.add('j', filter=navigation)
         def vim_down(_event: KeyPressEvent) -> None:
@@ -324,6 +370,13 @@ class FavoriteBrowser:
         self.parameter_query = query
         self.parameter_name = self.filtered[self.index][0]
         self.parameter_fields = []
+        self.variable_generation += 1
+        self.variable_field = None
+        self.variable_candidates = []
+        self.variable_matches = []
+        self.variable_index = None
+        self.variable_error = False
+        self.variable_loading = False
         for key in names:
             field = TextArea(height=1, multiline=False, prompt=f'{key}: ')
             field.buffer.accept_handler = self._accept_parameter
@@ -337,6 +390,83 @@ class FavoriteBrowser:
         first = self.parameter_fields[0][1] if self.parameter_fields else self.parameter_extra
         assert first is not None
         self.application.layout.focus(first)
+        if len(names) == 1 and not dynamic and self.variable_names is not None and is_global_variables_query(query):
+            self.variable_field = first
+            first.buffer.on_text_changed += self._filter_variables
+            self._start_variables(first)
+
+    def _variable_text(self) -> StyleAndTextTuples:
+        value = self.variable_field.text if self.variable_field is not None else ''
+        label = 'Use current input (Enter)' if value else 'Use empty filter (all variables)'
+        fragments: StyleAndTextTuples = [
+            (
+                'class:favorite.selected' if self.variable_index is None else '',
+                f' {"›" if self.variable_index is None else " "} {label}\n',
+                partial(self._choose_variable, None),
+            )
+        ]
+        if self.variable_loading:
+            fragments.append(('', ' Loading variable names…'))
+        elif self.variable_error:
+            fragments.append(('', ' Names unavailable; use typed input.'))
+        elif not self.variable_matches:
+            fragments.append(('', ' No matching names; use typed input.'))
+        for index, name in enumerate(self.variable_matches):
+            selected = index == self.variable_index
+            fragments.append((
+                'class:favorite.selected' if selected else '',
+                f' {"›" if selected else " "} {name}\n',
+                partial(self._choose_variable, index),
+            ))
+        return fragments
+
+    def _choose_variable(self, index: int | None, event: MouseEvent) -> None:
+        if event.event_type == MouseEventType.MOUSE_UP:
+            self.variable_index = index
+            if self.variable_field is not None:
+                self.application.layout.focus(self.variable_field)
+        elif event.event_type in (MouseEventType.SCROLL_UP, MouseEventType.SCROLL_DOWN):
+            self._move_variable(-3 if event.event_type == MouseEventType.SCROLL_UP else 3)
+
+    def _move_variable(self, step: int) -> None:
+        current = -1 if self.variable_index is None else self.variable_index
+        current = max(-1, min(current + step, len(self.variable_matches) - 1))
+        self.variable_index = None if current < 0 else current
+
+    def _filter_variables(self, *_args: object) -> None:
+        query = self.variable_field.text.casefold() if self.variable_field is not None else ''
+        self.variable_matches = [name for name in self.variable_candidates if query in name.casefold()]
+        self.variable_index = None
+        self.application.invalidate()
+
+    def _start_variables(self, field: TextArea) -> None:
+        loader = self.variable_names
+        assert loader is not None
+        generation = self.variable_generation
+        self.variable_loading = True
+
+        def fetch() -> None:
+            failed = False
+            try:
+                names = loader()
+            except Exception:
+                names, failed = [], True
+            loop = self.application.loop
+            if loop is not None and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(self._receive_variables, generation, field, names, failed)
+                except RuntimeError:
+                    pass  # The UI closed while its metadata request finished.
+
+        threading.Thread(target=fetch, name='favorite_variable_names', daemon=True).start()
+
+    def _receive_variables(self, generation: int, field: TextArea, names: list[str], failed: bool) -> None:
+        if self.screen != 'parameters' or self.variable_generation != generation or self.variable_field is not field:
+            return
+        self.variable_loading = False
+        self.variable_error = failed
+        self.variable_candidates = names
+        self._filter_variables()
 
     def _accept_parameter(self, buffer: Buffer) -> bool:
         fields = [field for _key, field in self.parameter_fields]
@@ -350,6 +480,8 @@ class FavoriteBrowser:
         return True
 
     def submit_parameters(self) -> None:
+        if self.variable_field is not None and self.variable_index is not None:
+            self.variable_field.text = self.variable_matches[self.variable_index]
         values = {key: field.text for key, field in self.parameter_fields}
         extra = self.parameter_extra.text if self.parameter_extra is not None else ''
         try:
@@ -447,9 +579,12 @@ def browse_favorites(
     editing_mode: EditingMode = EditingMode.EMACS,
     edit: bool = False,
     name: str = '',
+    variable_names: Callable[[], list[str]] | None = None,
 ) -> FavoriteOutcome | None:
     if name and favorites.get(name) is None:
         return FavoriteOutcome(message=f'No favorite query: {name}')
     if not favorites.list():
         return FavoriteOutcome(message=r'No favorite queries. Save one with \fs name SQL.')
-    return FavoriteBrowser(favorites, style=style, editing_mode=editing_mode, edit=edit, name=name).application.run()
+    return FavoriteBrowser(
+        favorites, style=style, editing_mode=editing_mode, edit=edit, name=name, variable_names=variable_names
+    ).application.run()

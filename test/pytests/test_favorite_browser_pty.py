@@ -36,6 +36,7 @@ patch=MonkeyPatch();patch_repl_runtime_defaults(patch)
 patch.setattr(repl,'render_prompt_string',lambda *args:ANSI('qa> '))
 executor=SimpleNamespace(conn=Mock(),run=Mock(side_effect=AssertionError('unexpected SQL execution')),dbname='qa')
 cli=make_repl_cli(executor);cli.prompt_session=PromptSession();cli.register_favorite_commands=Mock()
+cli._favorite_variable_names=SimpleNamespace(get=lambda _connection:['connect_timeout','max_connections','wait_timeout'])
 state=repl.ReplState()
 repl._one_iteration(cli,state)
 print('RESULT_JSON '+json.dumps({'buffer':state.buffer_text,'queries':dict(ConfigObj(sys.argv[1])['favorite_queries']),
@@ -43,7 +44,7 @@ print('RESULT_JSON '+json.dumps({'buffer':state.buffer_text,'queries':dict(Confi
 '''
 
 
-@pytest.mark.parametrize('case', ['template', 'vars', 'edit'])
+@pytest.mark.parametrize('case', ['template', 'vars', 'vars_pick', 'edit'])
 def test_terminal_load_and_save_restore_screen_without_sql(tmp_path: Path, case: str) -> None:
     import fcntl
     import pty
@@ -85,9 +86,13 @@ def test_terminal_load_and_save_restore_screen_without_sql(tmp_path: Path, case:
         else:
             os.write(master, b'\\f\r')
             until(b'SQL preview')
-            os.write(master, case.encode() + b'\r')
+            os.write(master, (b'vars' if case == 'vars_pick' else case.encode()) + b'\r')
             until(b'Parameters')
-            os.write(master, b'timeout\r' if case == 'vars' else b'23\rKim\r')
+            if case == 'vars_pick':
+                until(b'connect_timeout')
+                os.write(master, b'timeout\x1b[B\r')
+            else:
+                os.write(master, b'timeout\r' if case == 'vars' else b'23\rKim\r')
         until(b'RESULT_JSON ')
         deadline = time.monotonic() + 5
         while child.poll() is None:
@@ -107,7 +112,13 @@ def test_terminal_load_and_save_restore_screen_without_sql(tmp_path: Path, case:
             assert result['buffer'] is None and result['queries']['orders'] == 'SELECT 23'
             assert result['refreshes'] == 1
         else:
-            expected = "SHOW GLOBAL VARIABLES LIKE '%timeout%';" if case == 'vars' else "SELECT 23, 'Kim';"
+            expected = (
+                "SHOW GLOBAL VARIABLES LIKE '%connect_timeout%';"
+                if case == 'vars_pick'
+                else "SHOW GLOBAL VARIABLES LIKE '%timeout%';"
+                if case == 'vars'
+                else "SELECT 23, 'Kim';"
+            )
             assert result['buffer'] == expected and result['refreshes'] == 0
             assert result['queries']['template'] == "SELECT $1, '{{ kv.name }}'"
             assert result['queries']['orders'] == 'SELECT * FROM orders'

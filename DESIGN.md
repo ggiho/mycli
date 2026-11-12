@@ -35,6 +35,7 @@
 
 ## Components
 - prompt_toolkit TextArea, Frame, Button and focus traversal; a selectable formatted-text name list.
+- Single-parameter global-variable filters show a searchable name list, with a free-input row.
 - No dependencies or additional theme system.
 
 ## Accessibility
@@ -56,7 +57,9 @@
 - Error: keep edited SQL available and show a storage error; no success result or alias refresh.
 - Save as collision: explicit Replace/Back choice. Dirty cancel: Discard/Keep editing choice.
 - Saved: return a status and refresh local aliases without database completion queries.
-- Browser/editor never acquires a database connection. Load asks for static named/numbered values; editor keeps the template raw.
+- Browser/editor do not run favorite SQL. Load asks for named/numbered values; editor keeps the template raw.
+- Global-variable suggestions use lazy background metadata on a separate connection. Preserve active results/transactions; cache names only.
+- The typed filter stays the default; arrows/mouse explicitly select a full name. Metadata failure preserves free input.
 - Parameter forms use native template defaults for omitted named values. Errors retain fields; Back preserves favorites.
 
 ## Content voice

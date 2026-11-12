@@ -4,7 +4,7 @@ from io import TextIOWrapper
 import logging
 import os
 import threading
-from typing import IO, Literal
+from typing import IO, TYPE_CHECKING, Literal
 
 from cli_helpers.tabular_output import TabularOutputFormatter
 from configobj import ConfigObj
@@ -49,8 +49,12 @@ from mycli.types import Query
 sqlparse.engine.grouping.MAX_GROUPING_DEPTH = None  # type: ignore[assignment]
 sqlparse.engine.grouping.MAX_GROUPING_TOKENS = None  # type: ignore[assignment]
 
+if TYPE_CHECKING:
+    from mycli.favorite_choices import VariableNameCache
+
 
 class MyCli(AppStateMixin, OutputMixin, ClientCommandsMixin, ClientConnectionMixin, ClientQueryMixin):
+    _favorite_variable_names: VariableNameCache
     default_prompt = DEFAULT_PROMPT
     default_prompt_splitln = "\\u@\\h\\n(\\t):\\d>"
     max_len_prompt = 45

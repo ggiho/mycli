@@ -226,7 +226,9 @@ def test_normal_repl_import_does_not_load_browser_widgets() -> None:
         [
             sys.executable,
             '-c',
-            "import mycli.main_modes.repl,sys; assert not {'mycli.favorite_browser','mycli.favorite_parameters'} & sys.modules.keys()",
+            "import mycli.main_modes.repl,sys; "
+            "names={'mycli.favorite_browser','mycli.favorite_parameters','mycli.favorite_choices'}; "
+            "assert names.isdisjoint(sys.modules)",
         ],
         capture_output=True,
         text=True,
@@ -450,3 +452,144 @@ def test_many_numbered_parameters_fit_a_narrow_form(favorites: FavoriteQueries) 
 
     result = asyncio.run(scenario())
     assert result is not None and result.query == 'SELECT ' + ', '.join(str(i) for i in range(1, 13))
+
+
+async def wait_for_variable_names(ui: FavoriteBrowser) -> None:
+    for _ in range(300):
+        if ui.screen == 'parameters' and not ui.variable_loading:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError('variable metadata did not finish')
+
+
+@pytest.mark.parametrize('pick,expected', [(False, 'timeout'), (True, 'connect_timeout')])
+def test_variable_list_filters_and_preserves_free_input(favorites: FavoriteQueries, pick: bool, expected: str) -> None:
+    before = Path(favorites.config_file or '').read_bytes()
+    loader = Mock(return_value=['connect_timeout', 'max_connections', 'wait_timeout'])
+
+    async def scenario() -> FavoriteOutcome | None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, variable_names=loader, input_stream=pipe, output_stream=DummyOutput())
+            loader.assert_not_called()
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('vars\rtimeout')
+            await wait_for_variable_names(ui)
+            assert ui.variable_matches == ['connect_timeout', 'wait_timeout']
+            assert ui.variable_index is None
+            pipe.send_text('\x1b[B\r' if pick else '\r')
+            return await asyncio.wait_for(task, 3)
+
+    result = asyncio.run(scenario())
+    assert result is not None and result.query == f"SHOW GLOBAL VARIABLES LIKE '%{expected}%'"
+    assert not result.saved and Path(favorites.config_file or '').read_bytes() == before
+    loader.assert_called_once_with()
+
+
+def test_unavailable_variable_list_keeps_manual_input(favorites: FavoriteQueries) -> None:
+    async def scenario() -> FavoriteOutcome | None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(
+                favorites, variable_names=Mock(side_effect=OSError('offline')), input_stream=pipe, output_stream=DummyOutput()
+            )
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('vars\r')
+            await wait_for_variable_names(ui)
+            assert ui.variable_error
+            pipe.send_text('custom_filter\r')
+            return await asyncio.wait_for(task, 3)
+
+    result = asyncio.run(scenario())
+    assert result is not None and result.query == "SHOW GLOBAL VARIABLES LIKE '%custom_filter%'"
+
+
+def test_closing_form_does_not_wait_for_variable_metadata(favorites: FavoriteQueries) -> None:
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def loader() -> list[str]:
+        started.set()
+        release.wait(3)
+        return ['connect_timeout']
+
+    async def scenario() -> None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, variable_names=loader, input_stream=pipe, output_stream=DummyOutput())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('vars\r')
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.variable_loading and started.is_set()
+            pipe.send_text('\x03')
+            assert await asyncio.wait_for(task, 1) is None
+            assert not release.is_set()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+
+
+def test_late_variable_metadata_does_not_modify_another_form(favorites: FavoriteQueries) -> None:
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def loader() -> list[str]:
+        started.set()
+        release.wait(3)
+        return ['connect_timeout']
+
+    async def scenario() -> None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, variable_names=loader, input_stream=pipe, output_stream=DummyOutput())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('vars\r')
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert started.is_set()
+            ui.back_to_browser()
+            ui.search.text = 'template'
+            ui.load()
+            assert ui.parameter_name == 'template' and ui.variable_field is None
+            release.set()
+            await asyncio.sleep(0.05)
+            assert ui.variable_candidates == []
+            ui.cancel()
+            assert await asyncio.wait_for(task, 3) is None
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+
+
+def test_non_variable_parameter_does_not_load_metadata(favorites: FavoriteQueries) -> None:
+    loader = Mock()
+
+    async def scenario() -> None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, edit=True, variable_names=loader, input_stream=pipe, output_stream=DummyOutput())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('vars\r')
+            for _ in range(100):
+                if ui.screen == 'edit':
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.screen == 'edit'
+            loader.assert_not_called()
+            ui.cancel()
+            assert await asyncio.wait_for(task, 3) is None
+
+    asyncio.run(scenario())
