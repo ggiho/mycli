@@ -25,6 +25,7 @@ def favorites(tmp_path: Path) -> FavoriteQueries:
     config['favorite_queries'] = {
         'all_users': 'SELECT * FROM users',
         'orders': "SELECT * FROM orders WHERE city = 'Busan'",
+        'vars': "SHOW GLOBAL VARIABLES LIKE '%{{ kv.n }}%'",
         'template': "SELECT $1, '{{ kv.name }}'",
     }
     config.write()
@@ -52,13 +53,19 @@ def test_searches_names_and_sql_and_previews_full_query(browser: tuple[FavoriteB
     assert ui.preview.text == "SELECT $1, '{{ kv.name }}'"
 
 
-def test_load_preserves_raw_template_without_saving_or_executing(browser: tuple[FavoriteBrowser, Mock]) -> None:
+def test_load_fills_template_without_saving_or_executing(browser: tuple[FavoriteBrowser, Mock]) -> None:
     ui, exit_app = browser
     ui.search.text = 'template'
     before = Path(ui.favorites.config_file or '').read_bytes()
     ui.load()
+    assert ui.screen == 'parameters'
+    exit_app.assert_not_called()
+    fields = dict(ui.parameter_fields)
+    fields['$1'].text = '23'
+    fields['name'].text = 'Kim'
+    ui.submit_parameters()
     outcome = exit_app.call_args.kwargs['result']
-    assert outcome == FavoriteOutcome(query="SELECT $1, '{{ kv.name }}'")
+    assert outcome == FavoriteOutcome(query="SELECT 23, 'Kim'")
     assert Path(ui.favorites.config_file or '').read_bytes() == before
 
 
@@ -167,7 +174,7 @@ def test_real_application_search_and_enter_only_load(favorites: FavoriteQueries,
             ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=Output())
             task = asyncio.create_task(ui.application.run_async())
             await asyncio.sleep(0)
-            pipe.send_text('/orders\r\r')
+            pipe.send_text('orders\r')
             return await asyncio.wait_for(task, 3)
 
     outcome = asyncio.run(scenario())
@@ -216,7 +223,11 @@ def test_normal_repl_import_does_not_load_browser_widgets() -> None:
     import sys
 
     result = subprocess.run(
-        [sys.executable, '-c', "import mycli.main_modes.repl,sys; assert 'mycli.favorite_browser' not in sys.modules"],
+        [
+            sys.executable,
+            '-c',
+            "import mycli.main_modes.repl,sys; assert not {'mycli.favorite_browser','mycli.favorite_parameters'} & sys.modules.keys()",
+        ],
         capture_output=True,
         text=True,
         timeout=15,
@@ -242,10 +253,11 @@ def test_search_mode_accepts_motion_keys_as_text(favorites: FavoriteQueries, pre
     async def scenario() -> FavoriteOutcome | None:
         with create_pipe_input() as pipe:
             ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            ui.finish_search()
             assert ui.application.layout.has_focus(ui.list_control)
             task = asyncio.create_task(ui.application.run_async())
             await asyncio.sleep(0)
-            pipe.send_text(prefix + 'hjklf/\r\r')
+            pipe.send_text(prefix + 'hjklf/\r')
             return await asyncio.wait_for(task, 3)
 
     result = asyncio.run(scenario())
@@ -258,6 +270,7 @@ def test_hjkl_selects_rows_and_switches_preview_without_search(favorites: Favori
     async def scenario() -> FavoriteOutcome | None:
         with create_pipe_input() as pipe:
             ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            ui.finish_search()
             task = asyncio.create_task(ui.application.run_async())
             await asyncio.sleep(0)
             pipe.send_text('lj')
@@ -283,7 +296,7 @@ def test_search_escape_returns_to_list_and_second_escape_closes(favorites: Favor
             ui.application.ttimeoutlen = ui.application.timeoutlen = 0.01
             task = asyncio.create_task(ui.application.run_async())
             await asyncio.sleep(0)
-            pipe.send_text('/orders\x1b')
+            pipe.send_text('orders\x1b')
             for _ in range(100):
                 if ui.search.text == 'orders' and ui.application.layout.has_focus(ui.list_control):
                     break
@@ -315,6 +328,7 @@ def test_tab_cycle_keeps_search_inactive(favorites: FavoriteQueries) -> None:
     async def scenario() -> FavoriteOutcome | None:
         with create_pipe_input() as pipe:
             ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            ui.finish_search()
             task = asyncio.create_task(ui.application.run_async())
             await asyncio.sleep(0)
             pipe.send_text('\t\t\t\t\tjl\r')
@@ -326,21 +340,113 @@ def test_tab_cycle_keeps_search_inactive(favorites: FavoriteQueries) -> None:
     assert result is not None and result.query == "SELECT * FROM orders WHERE city = 'Busan'"
 
 
-def test_fe_navigation_enter_still_opens_editor(favorites: FavoriteQueries) -> None:
+def test_fe_search_enter_edits_template_without_parameter_form(favorites: FavoriteQueries) -> None:
     async def scenario() -> None:
         with create_pipe_input() as pipe:
             ui = FavoriteBrowser(favorites, edit=True, input_stream=pipe, output_stream=DummyOutput())
             task = asyncio.create_task(ui.application.run_async())
             await asyncio.sleep(0)
-            pipe.send_text('jl\r')
+            pipe.send_text('template\r')
             for _ in range(100):
                 if ui.screen == 'edit':
                     break
                 await asyncio.sleep(0.01)
-            assert ui.screen == 'edit' and ui.original_name == 'orders'
-            assert ui.editor.text == "SELECT * FROM orders WHERE city = 'Busan'"
+            assert ui.screen == 'edit' and ui.original_name == 'template'
+            assert ui.editor.text == "SELECT $1, '{{ kv.name }}'"
+            assert ui.parameter_fields == []
             assert not task.done()
             ui.cancel()
             assert await asyncio.wait_for(task, 3) is None
 
     asyncio.run(scenario())
+
+
+def test_vars_search_prompts_and_accepts_parameter_text(favorites: FavoriteQueries) -> None:
+    before = Path(favorites.config_file or '').read_bytes()
+
+    async def scenario() -> FavoriteOutcome | None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            assert ui.application.layout.has_focus(ui.search)
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('vars\rhjklf/\r')
+            return await asyncio.wait_for(task, 3)
+
+    result = asyncio.run(scenario())
+    assert result is not None and result.query == "SHOW GLOBAL VARIABLES LIKE '%hjklf/%'"
+    assert not result.saved and Path(favorites.config_file or '').read_bytes() == before
+
+
+def test_parameter_escape_returns_to_filtered_list_without_saving(favorites: FavoriteQueries) -> None:
+    before = Path(favorites.config_file or '').read_bytes()
+
+    async def scenario() -> None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=DummyOutput())
+            ui.application.ttimeoutlen = ui.application.timeoutlen = 0.01
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('vars\rtimeout\x1b')
+            for _ in range(100):
+                if ui.screen == 'browse' and ui.application.layout.has_focus(ui.list_control):
+                    break
+                await asyncio.sleep(0.01)
+            assert ui.screen == 'browse' and ui.application.layout.has_focus(ui.list_control)
+            assert ui.search.text == 'vars' and not task.done()
+            pipe.send_text('\x1b')
+            assert await asyncio.wait_for(task, 3) is None
+
+    asyncio.run(scenario())
+    assert Path(favorites.config_file or '').read_bytes() == before
+
+
+def test_parameter_render_error_keeps_inputs_for_retry(favorites: FavoriteQueries, monkeypatch: pytest.MonkeyPatch) -> None:
+    favorites.config['favorite_queries']['broken'] = 'SELECT {{ 1 / kv.n|int }}'
+    ui = FavoriteBrowser(favorites, input_stream=DummyInput(), output_stream=DummyOutput())
+    exit_app = Mock()
+    monkeypatch.setattr(ui.application, 'exit', exit_app)
+    ui.search.text = 'broken'
+    ui.load()
+    fields = dict(ui.parameter_fields)
+    fields['n'].text = '0'
+    ui.submit_parameters()
+    assert ui.screen == 'parameters' and fields['n'].text == '0'
+    assert 'Could not fill parameters' in ui.notice
+    exit_app.assert_not_called()
+    fields['n'].text = '2'
+    ui.submit_parameters()
+    assert exit_app.call_args.kwargs['result'].query == 'SELECT 0.5'
+
+
+def test_dynamic_parameters_accept_extra_named_arguments(favorites: FavoriteQueries, monkeypatch: pytest.MonkeyPatch) -> None:
+    favorites.config['favorite_queries']['dynamic'] = "SELECT '{{ kv[kv.which] }}'"
+    ui = FavoriteBrowser(favorites, input_stream=DummyInput(), output_stream=DummyOutput())
+    exit_app = Mock()
+    monkeypatch.setattr(ui.application, 'exit', exit_app)
+    ui.search.text = 'dynamic'
+    ui.load()
+    dict(ui.parameter_fields)['which'].text = 'name'
+    assert ui.parameter_extra is not None
+    ui.parameter_extra.text = '--name="Kim Min Su"'
+    ui.submit_parameters()
+    assert exit_app.call_args.kwargs['result'].query == "SELECT 'Kim Min Su'"
+
+
+def test_many_numbered_parameters_fit_a_narrow_form(favorites: FavoriteQueries) -> None:
+    favorites.config['favorite_queries']['many'] = 'SELECT ' + ', '.join(f'${i}' for i in range(1, 13))
+
+    class Output(DummyOutput):
+        def get_size(self) -> Size:
+            return Size(rows=24, columns=40)
+
+    async def scenario() -> FavoriteOutcome | None:
+        with create_pipe_input() as pipe:
+            ui = FavoriteBrowser(favorites, input_stream=pipe, output_stream=Output())
+            task = asyncio.create_task(ui.application.run_async())
+            await asyncio.sleep(0)
+            pipe.send_text('many\r' + ''.join(f'{i}\r' for i in range(1, 13)))
+            return await asyncio.wait_for(task, 3)
+
+    result = asyncio.run(scenario())
+    assert result is not None and result.query == 'SELECT ' + ', '.join(str(i) for i in range(1, 13))

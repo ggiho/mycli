@@ -12,14 +12,14 @@
 ## Product goals
 - Find saved SQL without remembering a name; inspect it, load it for an ad hoc edit, or persist an intentional change.
 - Success: selecting never runs SQL, saving is explicit, cancellation and storage failures preserve the original favorite.
-- Non-goals: database execution/editing, parameter forms, tags and shared-file synchronization in this iteration.
+- Non-goals: database execution/editing, tags and shared-file synchronization in this iteration.
 
 ## Personas and jobs
 - Existing mycli user; mixed terminal experience; local and chezmoi-managed configuration.
 - Jobs: search favorites, inspect full SQL, load into the normal prompt, edit and save under the same or another name.
 
 ## Information architecture
-- Interactive bare `\f`: search → names and SQL preview → load into prompt.
+- Interactive bare `\f`: search first → names and SQL preview → parameter inputs if needed → filled SQL in prompt.
 - `\fe [name]`: select if unnamed → SQL editor → Save / Save as / Cancel.
 - `\f name` keeps direct execution. Script/source `\f` keeps its text list.
 
@@ -38,8 +38,9 @@
 - No dependencies or additional theme system.
 
 ## Accessibility
-- The list receives initial focus. j/k select or read preview lines; h/l focus list/preview.
-- f or / explicitly enters search; Enter/Escape returns to list navigation with the filter retained.
+- Search receives initial focus; Enter selects immediately. Escape enters list navigation.
+- In navigation, j/k select or read preview lines; h/l focus list/preview.
+- f or / reopens search; Escape returns to list navigation with the filter retained.
 - Search/editor/name fields accept hjkl and search characters as text; Tab traversal skips inactive search.
 - Arrows remain available; Enter on either pane loads/opens editing; Tab/Shift+Tab reach actions.
 - Buttons and selection markers convey state independently of color. Mouse selection is supported.
@@ -55,7 +56,8 @@
 - Error: keep edited SQL available and show a storage error; no success result or alias refresh.
 - Save as collision: explicit Replace/Back choice. Dirty cancel: Discard/Keep editing choice.
 - Saved: return a status and refresh local aliases without database completion queries.
-- Browser/editor never acquires a database connection; raw template placeholders remain visible.
+- Browser/editor never acquires a database connection. Load asks for static named/numbered values; editor keeps the template raw.
+- Parameter forms use native template defaults for omitted named values. Errors retain fields; Back preserves favorites.
 
 ## Content voice
 - Short English action labels consistent with mycli: Search, SQL preview, Load, Edit, Save, Save as, Cancel.
@@ -68,4 +70,4 @@
 - Verify real terminal restoration and the interactive/noninteractive boundary.
 
 ## Open questions
-- None blocking this iteration. Parameter forms and shared-query provenance can be considered separately.
+- None blocking this iteration. Shared-query provenance can be considered separately.

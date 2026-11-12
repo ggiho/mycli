@@ -26,7 +26,11 @@ from test.pytests.test_main_modes_repl import make_repl_cli,patch_repl_runtime_d
 from mycli.main_modes import repl
 from mycli.packages.special.favoritequeries import FavoriteQueries
 config=ConfigObj(encoding='utf-8');config.filename=sys.argv[1]
-config['favorite_queries']={'orders': 'SELECT * FROM orders', 'template': "SELECT $1, '{{ kv.name }}'"};config.write()
+config['favorite_queries']={
+ 'orders': 'SELECT * FROM orders',
+ 'template': "SELECT $1, '{{ kv.name }}'",
+ 'vars': "SHOW GLOBAL VARIABLES LIKE '%{{ kv.n }}%'",
+};config.write()
 FavoriteQueries.instance=FavoriteQueries(config,sys.argv[1])
 patch=MonkeyPatch();patch_repl_runtime_defaults(patch)
 patch.setattr(repl,'render_prompt_string',lambda *args:ANSI('qa> '))
@@ -39,8 +43,8 @@ print('RESULT_JSON '+json.dumps({'buffer':state.buffer_text,'queries':dict(Confi
 '''
 
 
-@pytest.mark.parametrize('editing', [False, True])
-def test_terminal_load_and_save_restore_screen_without_sql(tmp_path: Path, editing: bool) -> None:
+@pytest.mark.parametrize('case', ['template', 'vars', 'edit'])
+def test_terminal_load_and_save_restore_screen_without_sql(tmp_path: Path, case: str) -> None:
     import fcntl
     import pty
     import struct
@@ -49,7 +53,8 @@ def test_terminal_load_and_save_restore_screen_without_sql(tmp_path: Path, editi
     master, slave = pty.openpty()
     initial = termios.tcgetattr(slave)
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
-    config = tmp_path / ('edit-config' if editing else 'load-config')
+    editing = case == 'edit'
+    config = tmp_path / (case + '-config')
     env = dict(os.environ, PROMPT_TOOLKIT_NO_CPR='1', TERM='xterm-256color')
     child = subprocess.Popen(
         [sys.executable, '-c', HARNESS, str(config)], stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True
@@ -80,7 +85,9 @@ def test_terminal_load_and_save_restore_screen_without_sql(tmp_path: Path, editi
         else:
             os.write(master, b'\\f\r')
             until(b'SQL preview')
-            os.write(master, b'/template\r\r')
+            os.write(master, case.encode() + b'\r')
+            until(b'Parameters')
+            os.write(master, b'timeout\r' if case == 'vars' else b'23\rKim\r')
         until(b'RESULT_JSON ')
         deadline = time.monotonic() + 5
         while child.poll() is None:
@@ -100,7 +107,9 @@ def test_terminal_load_and_save_restore_screen_without_sql(tmp_path: Path, editi
             assert result['buffer'] is None and result['queries']['orders'] == 'SELECT 23'
             assert result['refreshes'] == 1
         else:
-            assert result['buffer'] == "SELECT $1, '{{ kv.name }}';" and result['refreshes'] == 0
+            expected = "SHOW GLOBAL VARIABLES LIKE '%timeout%';" if case == 'vars' else "SELECT 23, 'Kim';"
+            assert result['buffer'] == expected and result['refreshes'] == 0
+            assert result['queries']['template'] == "SELECT $1, '{{ kv.name }}'"
             assert result['queries']['orders'] == 'SELECT * FROM orders'
         assert b'\x1b[?1049h' in output and b'\x1b[?1049l' in output
         restored = termios.tcgetattr(slave)

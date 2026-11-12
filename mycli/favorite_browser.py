@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from functools import partial
 
 from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
@@ -16,7 +17,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.key_binding.key_processor import KeyPressEvent
 from prompt_toolkit.key_binding.vi_state import InputMode
-from prompt_toolkit.layout import Dimension, DynamicContainer, HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout import Dimension, DynamicContainer, HSplit, Layout, ScrollablePane, VSplit, Window
 from prompt_toolkit.layout.containers import AnyContainer, ScrollOffsets
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.lexers import PygmentsLexer
@@ -25,6 +26,7 @@ from prompt_toolkit.output import Output
 from prompt_toolkit.styles import BaseStyle, Style, merge_styles
 from prompt_toolkit.widgets import Button, Frame, Label, TextArea
 
+from mycli.favorite_parameters import parameter_names, render_parameters
 from mycli.lexer import MyCliLexer
 from mycli.packages.special.favoritequeries import FavoriteQueries
 
@@ -59,6 +61,10 @@ class FavoriteBrowser:
         self.original_name = ''
         self.original_sql = ''
         self.pending_name = ''
+        self.parameter_query = ''
+        self.parameter_name = ''
+        self.parameter_fields: list[tuple[str, TextArea]] = []
+        self.parameter_extra: TextArea | None = None
         self.search = TextArea(
             height=1,
             multiline=False,
@@ -83,8 +89,10 @@ class FavoriteBrowser:
         self.replace_button = Button('Replace', self.replace)
         self.discard_button = Button('Discard', lambda: self.application.exit())
         self.continue_button = Button('Keep editing', self.back_to_editor, width=16)
+        self.parameter_load_button = Button('Load', self.submit_parameters)
+        self.parameter_back_button = Button('Back', self.back_to_browser)
         self.application: Application[FavoriteOutcome | None] = Application(
-            layout=Layout(DynamicContainer(self._body), focused_element=self.list_control),
+            layout=Layout(DynamicContainer(self._body), focused_element=self.search),
             key_bindings=self._bindings(),
             style=merge_styles([
                 style or Style([]),
@@ -185,11 +193,26 @@ class FavoriteBrowser:
                 body,
                 status,
                 Label(
-                    'Search · Enter/Esc list · ↑↓ select'
+                    f'Search · Enter {action} · Esc hjkl · ↑↓ select'
                     if self._searching()
                     else f'hjkl move · f,/ search · Enter {action} · Tab actions · Esc close'
                 ),
                 self._buttons(self.load_button, self.edit_button, self.cancel_button),
+            ])
+        if self.screen == 'parameters':
+            fields = [field for _key, field in self.parameter_fields]
+            if self.parameter_extra is not None:
+                fields.append(self.parameter_extra)
+            return HSplit([
+                Frame(
+                    ScrollablePane(HSplit(fields), show_scrollbar=len(fields) > 10),
+                    title=f'Parameters · {self.parameter_name}',
+                    height=Dimension(max=min(12, len(fields) + 2)),
+                ),
+                Frame(self.preview, title='Template'),
+                status,
+                Label('Enter next/load · Tab actions · Esc back · blank named inputs use defaults'),
+                self._buttons(self.parameter_load_button, self.parameter_back_button),
             ])
         footer: list[AnyContainer]
         if self.screen == 'save_as':
@@ -249,9 +272,7 @@ class FavoriteBrowser:
 
         @kb.add('enter', filter=browsing | Condition(lambda: self.screen == 'browse' and self.application.layout.has_focus(self.preview)))
         def select(_event: KeyPressEvent) -> None:
-            if self._searching():
-                self.finish_search()
-            elif self.edit_on_enter:
+            if self.edit_on_enter:
                 self.edit_selected()
             else:
                 self.load()
@@ -272,6 +293,8 @@ class FavoriteBrowser:
         def escape(_event: KeyPressEvent) -> None:
             if self._searching():
                 self.finish_search()
+            elif self.screen == 'parameters':
+                self.back_to_browser()
             elif self.screen in ('save_as', 'overwrite', 'discard'):
                 self.back_to_editor()
             else:
@@ -290,7 +313,60 @@ class FavoriteBrowser:
         if not query.strip():
             self.notice = 'This favorite is empty. Choose Edit to add SQL.'
             return
+        try:
+            names, dynamic = parameter_names(query)
+            if not names and not dynamic:
+                self._complete_load(render_parameters(query, {}))
+                return
+        except Exception as error:
+            self.notice = f'Could not read parameters: {error}'
+            return
+        self.parameter_query = query
+        self.parameter_name = self.filtered[self.index][0]
+        self.parameter_fields = []
+        for key in names:
+            field = TextArea(height=1, multiline=False, prompt=f'{key}: ')
+            field.buffer.accept_handler = self._accept_parameter
+            self.parameter_fields.append((key, field))
+        self.parameter_extra = None
+        if dynamic:
+            self.parameter_extra = TextArea(height=1, multiline=False, prompt='Additional --key=value: ')
+            self.parameter_extra.buffer.accept_handler = self._accept_parameter
+        self.notice = ''
+        self.screen = 'parameters'
+        first = self.parameter_fields[0][1] if self.parameter_fields else self.parameter_extra
+        assert first is not None
+        self.application.layout.focus(first)
+
+    def _accept_parameter(self, buffer: Buffer) -> bool:
+        fields = [field for _key, field in self.parameter_fields]
+        if self.parameter_extra is not None:
+            fields.append(self.parameter_extra)
+        index = next(i for i, field in enumerate(fields) if field.buffer is buffer)
+        if index + 1 < len(fields):
+            self.application.layout.focus(fields[index + 1])
+        else:
+            self.submit_parameters()
+        return True
+
+    def submit_parameters(self) -> None:
+        values = {key: field.text for key, field in self.parameter_fields}
+        extra = self.parameter_extra.text if self.parameter_extra is not None else ''
+        try:
+            self._complete_load(render_parameters(self.parameter_query, values, extra))
+        except Exception as error:
+            self.notice = f'Could not fill parameters: {error}'
+
+    def _complete_load(self, query: str) -> None:
+        if not query.strip():
+            self.notice = 'The template produced an empty query. Edit it or supply values.'
+            return
         self.application.exit(result=FavoriteOutcome(query=query))
+
+    def back_to_browser(self) -> None:
+        self.screen = 'browse'
+        self.notice = ''
+        self.application.layout.focus(self.list_control)
 
     def edit_selected(self) -> None:
         if self.filtered:
