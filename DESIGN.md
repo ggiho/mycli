@@ -88,7 +88,9 @@
 - Use existing terminal background and syntax theme. Highlight only the active pane's selection; inactive selection stays bold.
 - Initial typing searches tables; Enter inspects. SELECT draft and Insert name are explicit actions.
 - Escape from the detail surface restores table search/caret; Escape in table search closes. Show context-specific hints.
-- Standard Tab/Shift+Tab and mouse reach views/actions. Existing j/k and f,/ navigation conventions work outside input fields.
+- Tab/Shift+Tab toggle only table search and the current detail body. gt/gT or mouse selects views; editable input never switches views.
+- Remove duplicate copy/close buttons from Indexes/SQL. Columns retains two explicit actions, reached by Enter on the grid and arrows.
+- Existing j/k and f,/ navigation conventions work outside input fields.
 - Metadata is typed, lazy, bounded, serialized and independent of main transaction/results. Ignore stale responses.
 - SQL view shows actual server definitions; PostgreSQL table CREATE DDL is not fabricated.
 - Verify screenshot/terminal buffer hierarchy as well as geometry, typing, switching, Escape and draft handoff.
