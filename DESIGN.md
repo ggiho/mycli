@@ -92,3 +92,6 @@
 - Metadata is typed, lazy, bounded, serialized and independent of main transaction/results. Ignore stale responses.
 - SQL view shows actual server definitions; PostgreSQL table CREATE DDL is not fabricated.
 - Verify screenshot/terminal buffer hierarchy as well as geometry, typing, switching, Escape and draft handoff.
+
+- Indexes/SQL are read-only navigable text panes: mouse cursor placement, arrows/hjkl, v selection, y copy (current line if unselected), Shift+arrows and selection-aware Ctrl+C.
+- Contextual Copy/Copy all actions use the desktop clipboard; failure retains the selection. Escape clears selection before leaving the pane.
