@@ -77,3 +77,10 @@
 
 ## Open questions
 - None blocking this iteration. Shared-query provenance can be considered separately.
+
+## Schema browser
+- Search accessible tables/views, preview column types/defaults and index/constraint metadata.
+- SELECT or Insert name returns quoted prompt text; SQL runs only on user submission.
+- List/preview use existing terminal theme; stack below 80 columns.
+- Metadata reads are lazy, bounded, serialized and independent of main transaction/results.
+- Replace F-key entry points with typed interactive commands. No unselected Ctrl/Alt mapping.

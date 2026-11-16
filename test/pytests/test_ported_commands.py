@@ -124,7 +124,7 @@ def _explain(sql, cursor_position=None, **kwargs):
 def test_f5_explain_prefixes_the_query_and_prints_a_table(capsys):
     assert _explain('SELECT * FROM t') == ['EXPLAIN SELECT * FROM t']
     out = capsys.readouterr().out
-    assert 'EXPLAIN Preview (F5)' in out
+    assert r'EXPLAIN Preview (\explain)' in out
     assert 'id' in out and 'ALL' in out
 
 
@@ -213,7 +213,7 @@ def _f5_bindings(mycli):
 
     stub = SimpleNamespace(config={}, sqlexecute=mycli.sqlexecute)
     bindings = key_bindings.mycli_bindings(stub).bindings
-    f5 = next(b for b in bindings if [str(k) for k in b.keys] == ['Keys.F5'])
+    f5 = SimpleNamespace(handler=stub.prompt_actions['explain'])
     sigint = next(b for b in bindings if [str(k) for k in b.keys] == ['Keys.SIGINT'])
     return f5, sigint
 

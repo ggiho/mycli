@@ -6,42 +6,16 @@ Most key bindings are simply inherited from `prompt-toolkit <https://python-prom
 
 The following key bindings are special to mycli:
 
-###
-F1
-###
+Interactive commands (no function keys)
+======================================
 
-Open documentation index in a browser tab.
+``\keys`` lists available interactive commands. ``\help`` shows CLI help.
+``\smart`` toggles smart completion, ``\multiline`` toggles multiline input,
+and ``\mode`` switches Vi/Emacs mode. ``\explain SQL`` previews a statement's
+EXPLAIN plan. ``\browse`` searches tables and shows columns, indexes and DDL.
 
-###
-F2
-###
-
-Enable/Disable SmartCompletion Mode.
-
-###
-F3
-###
-
-Enable/Disable Multiline Mode.
-
-###
-F4
-###
-
-Toggle between Vi and Emacs mode.
-
-###
-F5
-###
-
-Show the ``EXPLAIN`` plan of the statement under the cursor, without running it or leaving the buffer.
-
-In the blanks between statements, the cursor belongs to the statement before it. Only statements ``EXPLAIN``
-accepts are explained (``SELECT``, ``INSERT``, ``UPDATE``, ``DELETE``, ``REPLACE``, ``TABLE`` and ``WITH``), and a
-statement holding a ``/*! ... */`` comment is refused, since MySQL runs what that holds.
-
-MySQL can execute a derived table or a subquery while planning, so a preview can take as long as that part of
-the query. Ctrl-C cancels it, keeping the buffer and the connection.
+The fork no longer binds function keys or their alternate escape sequences.
+Existing Ctrl+T, history, editing and formatting bindings remain available.
 
 ##
 Up

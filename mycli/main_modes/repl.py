@@ -774,7 +774,7 @@ def _keepalive_hook(
     if viewer is not None and viewer.live_cursor:
         return
     if EXPLAIN_RUNNING.is_set():
-        # F5's EXPLAIN is using the connection on another thread.
+        # An EXPLAIN preview is using the connection on another thread.
         return
 
     mycli._keepalive_counter += 1
@@ -962,6 +962,21 @@ def _one_iteration(
     text = text.strip()
     if not text:
         return True
+
+    if interactive_input and text.startswith((r'\browse', r'\smart', r'\multiline', r'\mode', r'\explain', r'\keys')):
+        from mycli.prompt_commands import run_prompt_command
+
+        try:
+            handled, draft = run_prompt_command(mycli, text)
+        except (KeyboardInterrupt, EOFError):
+            return True
+        except Exception as error:
+            mycli.echo(f'Could not complete command: {error}', err=True, fg='red')
+            return False
+        if handled:
+            if draft is not None:
+                state.buffer_text = draft
+            return True
 
     original_text = text
     try:

@@ -160,13 +160,13 @@ indexed columns are tagged with a "*" in completion menus!
 
 edit a query in an external editor using keystrokes control-x + control-e!
 
-open a documentation browser using keystroke F1!
+show interactive commands using \keys!
 
-toggle smart completion using keystroke F2!
+toggle smart completion using \smart!
 
-toggle multi-line mode using keystroke F3!
+toggle multi-line mode using \multiline!
 
-toggle vi mode using keystroke F4!
+toggle vi mode using \mode!
 
 complete at cursor using the tab key!
 

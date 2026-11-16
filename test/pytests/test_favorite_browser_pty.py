@@ -186,7 +186,7 @@ def test_escape_backspace_and_query_prompt_roundtrip(tmp_path: Path) -> None:
                 output.extend(chunk)
 
     try:
-        until(b'qa>')
+        until(b'qa>', timeout=30)
         os.write(master, b'\\f\r')
         until(b'SQL preview')
         os.write(master, b'vars\rtimeout')

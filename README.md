@@ -59,6 +59,9 @@ mycli --help
 Features
 --------
 
+This fork adds a [schema browser and commands without function keys](doc/schema-browser.md).
+
+
 * Auto-completion as you type for SQL keywords as well as tables, views,
   columns, enums, and more!
 * Fuzzy history search using [fzf](https://github.com/junegunn/fzf).

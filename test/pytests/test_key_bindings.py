@@ -216,10 +216,9 @@ def test_edit_and_execute_opens_editor_without_validation() -> None:
     assert event.current_buffer.open_in_editor_calls == [False]
 
 
-@pytest.mark.parametrize('keys', ((Keys.F1,), (Keys.Escape, '[', 'P')))
-def test_f1_bindings_open_docs_show_help_and_invalidate(monkeypatch, keys: tuple[str | Keys, ...]) -> None:
+def test_help_action_opens_docs_show_help_and_invalidate(monkeypatch) -> None:
     mycli = DummyMyCli(DummyKeysConfig())
-    kb = key_bindings.mycli_bindings(mycli)
+    key_bindings.mycli_bindings(mycli)
     event = make_event()
     browser_calls: list[str] = []
     terminal_calls: list[Callable[[], None]] = []
@@ -233,54 +232,49 @@ def test_f1_bindings_open_docs_show_help_and_invalidate(monkeypatch, keys: tuple
     )
     monkeypatch.setattr(key_bindings, 'safe_invalidate_display', lambda app: invalidated.append(app))
 
-    binding_handler(kb, *keys)(event)
+    mycli.prompt_actions['help'](event)
 
     assert browser_calls == [key_bindings.DOCS_URL]
     assert terminal_calls == [key_bindings.print_f1_help]
     assert invalidated == [event.app]
 
 
-@pytest.mark.parametrize('keys', ((Keys.F2,), (Keys.Escape, '[', 'Q')))
-def test_f2_bindings_toggle_smart_completion(keys: tuple[str | Keys, ...]) -> None:
+def test_smart_action_toggles_completion() -> None:
     mycli = DummyMyCli(DummyKeysConfig(), smart_completion=True)
-    kb = key_bindings.mycli_bindings(mycli)
+    key_bindings.mycli_bindings(mycli)
 
-    binding_handler(kb, *keys)(make_event())
+    mycli.prompt_actions['smart'](make_event())
 
     assert mycli.completer.smart_completion is False
 
 
-@pytest.mark.parametrize('keys', ((Keys.F3,), (Keys.Escape, '[', 'R')))
-def test_f3_bindings_toggle_multiline_mode(keys: tuple[str | Keys, ...]) -> None:
+def test_multiline_action_toggles_mode() -> None:
     mycli = DummyMyCli(DummyKeysConfig(), multi_line=False)
-    kb = key_bindings.mycli_bindings(mycli)
+    key_bindings.mycli_bindings(mycli)
 
-    binding_handler(kb, *keys)(make_event())
+    mycli.prompt_actions['multiline'](make_event())
 
     assert mycli.multi_line is True
 
 
 @pytest.mark.parametrize(
-    ('keys', 'initial_mode', 'expected_mode', 'expected_editing_mode', 'expected_timeout'),
+    ('initial_mode', 'expected_mode', 'expected_editing_mode', 'expected_timeout'),
     (
-        ((Keys.F4,), 'vi', 'emacs', EditingMode.EMACS, 1.5),
-        ((Keys.F4,), 'emacs', 'vi', EditingMode.VI, 0.5),
-        ((Keys.Escape, '[', 'S'), 'vi', 'emacs', EditingMode.EMACS, 1.5),
-        ((Keys.Escape, '[', 'S'), 'emacs', 'vi', EditingMode.VI, 0.5),
+        ('vi', 'emacs', EditingMode.EMACS, 1.5),
+        ('emacs', 'vi', EditingMode.VI, 0.5),
     ),
 )
-def test_f4_bindings_toggle_key_binding_modes(
-    keys: tuple[str | Keys, ...],
+def test_mode_action_toggles_key_binding_modes(
     initial_mode: str,
     expected_mode: str,
     expected_editing_mode: EditingMode,
     expected_timeout: float,
 ) -> None:
     mycli = DummyMyCli(DummyKeysConfig(), key_bindings_mode=initial_mode)
-    kb = key_bindings.mycli_bindings(mycli)
+    key_bindings.mycli_bindings(mycli)
     event = make_event()
 
-    binding_handler(kb, *keys)(event)
+    mycli.prompt_actions['mode'](event)
 
     assert mycli.key_bindings == expected_mode
     assert event.app.editing_mode == expected_editing_mode
@@ -427,8 +421,8 @@ def test_control_space_supports_completion_behaviors(
     ),
 )
 def test_prettify_bindings_transform_non_empty_buffer(
-    monkeypatch,
     keys: tuple[str | Keys, ...],
+    monkeypatch,
     handler_name: str,
 ) -> None:
     mycli = DummyMyCli(DummyKeysConfig(), key_bindings_mode='emacs')
@@ -471,8 +465,8 @@ def test_prettify_bindings_skip_empty_buffer(monkeypatch, keys: tuple[str | Keys
     ),
 )
 def test_date_and_datetime_bindings_insert_shortcuts(
-    monkeypatch,
     keys: tuple[str | Keys, ...],
+    monkeypatch,
     expected_text: str,
 ) -> None:
     mycli = DummyMyCli(DummyKeysConfig(), key_bindings_mode='emacs')

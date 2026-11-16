@@ -171,6 +171,8 @@ def test_register_special_commands_registers_expected_commands(monkeypatch: pyte
 
     client.register_special_commands()
 
+    assert [call[1] for call in calls[:6]] == [r'\browse', r'\smart', r'\multiline', r'\mode', r'\explain', r'\keys']
+    calls = calls[6:]
     assert [call[1] for call in calls] == [
         'use',
         'connect',

@@ -34,24 +34,24 @@ def create_toolbar_tokens_func(
         dynamic = []
 
         result.append(divider)
-        result.append(("class:bottom-toolbar", "[F1] Help"))
+        result.append(("class:bottom-toolbar", "\\keys Help"))
 
         if mycli.completer.smart_completion:
             result.append(divider)
-            result.append(("class:bottom-toolbar", "[F2] Smart-complete:"))
+            result.append(("class:bottom-toolbar", "\\smart:"))
             result.append(("class:bottom-toolbar.on", "ON "))
         else:
             result.append(divider)
-            result.append(("class:bottom-toolbar", "[F2] Smart-complete:"))
+            result.append(("class:bottom-toolbar", "\\smart:"))
             result.append(("class:bottom-toolbar.off", "OFF"))
 
         if mycli.multi_line:
             result.append(divider)
-            result.append(("class:bottom-toolbar", "[F3] Multiline:"))
+            result.append(("class:bottom-toolbar", "\\multiline:"))
             result.append(("class:bottom-toolbar.on", "ON "))
         else:
             result.append(divider)
-            result.append(("class:bottom-toolbar", "[F3] Multiline:"))
+            result.append(("class:bottom-toolbar", "\\multiline:"))
             result.append(("class:bottom-toolbar.off", "OFF"))
 
         if mycli.prompt_session.editing_mode == EditingMode.VI:

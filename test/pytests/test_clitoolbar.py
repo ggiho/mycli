@@ -37,9 +37,9 @@ def test_create_toolbar_tokens_func_shows_initial_help() -> None:
     result = toolbar()
 
     assert ("class:bottom-toolbar", "right-arrow accepts full-line suggestion") in result
-    assert ("class:bottom-toolbar", "[F2] Smart-complete:") in result
+    assert ("class:bottom-toolbar", "\\smart:") in result
     assert ("class:bottom-toolbar.on", "ON ") in result
-    assert ("class:bottom-toolbar", "[F3] Multiline:") in result
+    assert ("class:bottom-toolbar", "\\multiline:") in result
     assert ("class:bottom-toolbar.off", "OFF") in result
 
 
@@ -79,7 +79,7 @@ def test_create_toolbar_tokens_func_shows_multiline_vi_and_refreshing(monkeypatc
     result = toolbar()
 
     assert ("class:bottom-toolbar.off", "OFF") in result
-    assert ("class:bottom-toolbar", "[F3] Multiline:") in result
+    assert ("class:bottom-toolbar", "\\multiline:") in result
     assert ("class:bottom-toolbar.on", "ON ") in result
     assert ("class:bottom-toolbar", "vi:") in result
     assert ("class:bottom-toolbar.on", "N") in result
@@ -121,7 +121,7 @@ def test_create_toolbar_tokens_func_replaces_default_toolbar_for_plain_custom_fo
     to_formatted_text.assert_called_once_with('custom toolbar', style='class:bottom-toolbar')
     assert ('class:bottom-toolbar', 'PLAIN CUSTOM') in result
     assert ('class:bottom-toolbar', '[Tab] Complete') not in result
-    assert ('class:bottom-toolbar', '[F1] Help') not in result
+    assert ('class:bottom-toolbar', '\\keys Help') not in result
     assert ('class:bottom-toolbar', 'right-arrow accepts full-line suggestion') in result
     assert ('class:bottom-toolbar.transaction.failed', 'boom') in result
 

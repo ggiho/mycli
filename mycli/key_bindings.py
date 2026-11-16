@@ -3,6 +3,7 @@ from functools import partial
 import logging
 import re
 import threading
+from typing import Callable
 import webbrowser
 
 import click
@@ -95,7 +96,7 @@ def edit_and_execute(event: KeyPressEvent) -> None:
 # and is excluded by not allowing a leading EXPLAIN.
 EXPLAINABLE_KEYWORDS = frozenset({'select', 'insert', 'update', 'delete', 'replace', 'table', 'with'})
 
-#: Set while the F5 EXPLAIN has the connection, on an executor thread.
+#: Set while the \explain EXPLAIN has the connection, on an executor thread.
 EXPLAIN_RUNNING = threading.Event()
 
 
@@ -161,7 +162,7 @@ def _run_explain(mycli, sql: str) -> None:
     for row in rows:
         for i, value in enumerate(row):
             widths[i] = max(widths[i], len(value))
-    click.echo('\n--- EXPLAIN Preview (F5) ---')
+    click.echo('\n--- EXPLAIN Preview (\\explain) ---')
     click.echo(' | '.join(h.ljust(widths[i]) for i, h in enumerate(header)))
     click.echo('-+-'.join('-' * w for w in widths))
     for row in rows:
@@ -170,7 +171,7 @@ def _run_explain(mycli, sql: str) -> None:
 
 
 def _cancel_explain(sqlexecute) -> None:
-    """Stop the running F5 EXPLAIN, as mycli cancels a query on Ctrl-C.
+    r"""Stop the running \explain EXPLAIN, as mycli cancels a query on Ctrl-C.
 
     KILL QUERY goes over a second, short-lived connection, so the one the
     EXPLAIN runs on (and its session: transaction, variables, temporary tables)
@@ -197,6 +198,15 @@ def _cancel_explain(sqlexecute) -> None:
 def mycli_bindings(mycli) -> KeyBindings:
     """Custom key bindings for mycli."""
     kb = KeyBindings()
+    mycli.prompt_actions = {}
+
+    def action(name: str) -> Callable:
+        def register(handler: Callable) -> Callable:
+            mycli.prompt_actions[name] = handler
+            return handler
+
+        return register
+
     viewer = getattr(mycli, 'result_viewer', None) or configured_result_viewer()
     mycli.result_viewer = viewer
     if viewer is not None:
@@ -223,10 +233,10 @@ def mycli_bindings(mycli) -> KeyBindings:
         truthy = ('true', 'yes', 'on', '1')
         return _atuin_setting('atuin_keys').lower() in truthy and _atuin_setting('atuin_history').lower() in truthy and atuin.is_available()
 
-    @kb.add('f5')
+    @action('explain')
     def _(event: KeyPressEvent) -> None:
         """Run EXPLAIN on the statement under the cursor and show the plan."""
-        _logger.debug('Detected F5 key.')
+        _logger.debug('Requested explain action.')
         buffer = event.app.current_buffer
         sql = explainable_statement(buffer.text, buffer.cursor_position)
         if sql is not None:
@@ -235,7 +245,7 @@ def mycli_bindings(mycli) -> KeyBindings:
 
     @kb.add(Keys.SIGINT, filter=Condition(EXPLAIN_RUNNING.is_set))
     def _(event: KeyPressEvent) -> None:
-        """Ctrl-C during the F5 preview cancels the EXPLAIN and keeps the buffer."""
+        """Ctrl-C during the explain preview cancels the EXPLAIN and keeps the buffer."""
         _cancel_explain(mycli.sqlexecute)
 
     # Registered only when enabled, so the default Up binding is untouched
@@ -258,50 +268,30 @@ def mycli_bindings(mycli) -> KeyBindings:
             if not atuin.search_history(event, atuin_author, up_key_binding=True):
                 buffer.auto_up(count=event.arg)
 
-    @kb.add('f1')
+    @action('help')
     def _(event: KeyPressEvent) -> None:
         """Open browser to documentation index."""
-        _logger.debug('Detected F1 key.')
+        _logger.debug('Detected help key.')
         webbrowser.open_new_tab(DOCS_URL)
         prompt_toolkit.application.run_in_terminal(print_f1_help)
         safe_invalidate_display(event.app)
 
-    @kb.add('escape', '[', 'P')
-    def _(event: KeyPressEvent) -> None:
-        """Open browser to documentation index."""
-        _logger.debug("Detected alternate F1 key sequence.")
-        webbrowser.open_new_tab(DOCS_URL)
-        prompt_toolkit.application.run_in_terminal(print_f1_help)
-        safe_invalidate_display(event.app)
-
-    @kb.add("f2")
+    @action('smart')
     def _(_event: KeyPressEvent) -> None:
         """Enable/Disable SmartCompletion Mode."""
-        _logger.debug("Detected F2 key.")
+        _logger.debug("Detected smart key.")
         mycli.completer.smart_completion = not mycli.completer.smart_completion
 
-    @kb.add('escape', '[', 'Q')
-    def _(_event: KeyPressEvent) -> None:
-        """Enable/Disable SmartCompletion Mode."""
-        _logger.debug("Detected alternate F2 key sequence.")
-        mycli.completer.smart_completion = not mycli.completer.smart_completion
-
-    @kb.add("f3")
+    @action('multiline')
     def _(_event: KeyPressEvent) -> None:
         """Enable/Disable Multiline Mode."""
-        _logger.debug("Detected F3 key.")
+        _logger.debug("Detected multiline key.")
         mycli.multi_line = not mycli.multi_line
 
-    @kb.add('escape', '[', 'R')
-    def _(_event: KeyPressEvent) -> None:
-        """Enable/Disable Multiline Mode."""
-        _logger.debug('Detected alternate F3 key sequence.')
-        mycli.multi_line = not mycli.multi_line
-
-    @kb.add("f4")
+    @action('mode')
     def _(event: KeyPressEvent) -> None:
         """Toggle between Vi and Emacs mode."""
-        _logger.debug("Detected F4 key.")
+        _logger.debug("Detected mode key.")
         if mycli.key_bindings == "vi":
             event.app.editing_mode = EditingMode.EMACS
             mycli.key_bindings = "emacs"
@@ -309,19 +299,6 @@ def mycli_bindings(mycli) -> KeyBindings:
         else:
             event.app.editing_mode = EditingMode.VI
             mycli.key_bindings = "vi"
-            event.app.ttimeoutlen = mycli.vi_ttimeoutlen
-
-    @kb.add('escape', '[', 'S')
-    def _(event: KeyPressEvent) -> None:
-        """Toggle between Vi and Emacs mode."""
-        _logger.debug('Detected alternate F4 key sequence.')
-        if mycli.key_bindings == 'vi':
-            event.app.editing_mode = EditingMode.EMACS
-            mycli.key_bindings = 'emacs'
-            event.app.ttimeoutlen = mycli.emacs_ttimeoutlen
-        else:
-            event.app.editing_mode = EditingMode.VI
-            mycli.key_bindings = 'vi'
             event.app.ttimeoutlen = mycli.vi_ttimeoutlen
 
     @kb.add("tab")

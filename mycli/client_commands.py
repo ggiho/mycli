@@ -235,6 +235,18 @@ class ClientCommandsMixin:
         def echo(self, *args: Any, **kwargs: Any) -> None: ...
 
     def register_special_commands(self) -> None:
+        def interactive_only(**_kwargs: Any) -> list[SQLResult]:
+            return [SQLResult(status=r'Use this command in the interactive prompt. See \keys.')]
+
+        for name, description in [
+            ('browse', 'Browse table and column metadata'),
+            ('smart', 'Toggle smart completion'),
+            ('multiline', 'Toggle multiline input'),
+            ('mode', 'Toggle Vi/Emacs mode'),
+            ('explain', 'Preview EXPLAIN for SQL'),
+            ('keys', 'List interactive commands'),
+        ]:
+            special.register_special_command(interactive_only, '\\' + name, '\\' + name, description)
         special.register_special_command(
             self.change_db,
             "use",
