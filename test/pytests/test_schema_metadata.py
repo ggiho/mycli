@@ -13,11 +13,13 @@ def test_metadata_closes_connection_and_quotes_identifiers(monkeypatch: pytest.M
     connect = MagicMock(return_value=metadata)
     monkeypatch.setattr(schema_metadata.pymysql, 'connect', connect)
     cursor = metadata.cursor.return_value.__enter__.return_value
-    cursor.fetchall.return_value = [('id', 'int', 'NO', 'PRI', None, 'identifier')]
+    cursor.fetchall.side_effect = [[('id', 'int', 'NO', 'PRI', None, 'identifier')], [('PRIMARY', 0, 1, 'id')]]
     cursor.fetchone.return_value = ('odd', 'CREATE TABLE `odd` (`id` int PRIMARY KEY)')
     provider = schema_metadata.SchemaMetadata(source)
     text = provider.describe('a`b', 'c`d')
-    assert 'PRIMARY KEY' in text and 'NOT NULL' in text
+    assert text.columns[0].primary and not text.columns[0].nullable
+    assert 'PRIMARY KEY' in text.definition
+    assert text.indexes[0].name == 'PRIMARY'
     assert cursor.execute.call_args.args == ('SHOW CREATE TABLE `a``b`.`c``d`',)
     assert cursor.execute.call_args_list[0].args[1] == ('a`b', 'c`d')
     metadata.close.assert_called_once()

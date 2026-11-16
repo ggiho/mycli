@@ -2,7 +2,7 @@
 
 ## Source of truth
 - Status: Active for the interactive favorite browser/editor; other mycli UI keeps its existing design.
-- Refreshed: 2026-11-12.
+- Refreshed: 2026-11-16.
 - Evidence: `mycli/clistyle.py`, `favoritequeries.py`, `main_modes/repl.py`, user-approved favorite workflow and terminal feedback.
 
 ## Brand
@@ -79,8 +79,16 @@
 - None blocking this iteration. Shared-query provenance can be considered separately.
 
 ## Schema browser
-- Search accessible tables/views, preview column types/defaults and index/constraint metadata.
-- SELECT or Insert name returns quoted prompt text; SQL runs only on user submission.
-- List/preview use existing terminal theme; stack below 80 columns.
-- Metadata reads are lazy, bounded, serialized and independent of main transaction/results.
-- Replace F-key entry points with typed interactive commands. No unselected Ctrl/Alt mapping.
+- Primary flow: search table → inspect column structure → explicitly load a SELECT draft.
+- Wide: compact left object list, one vertical separator, right detail surface. Narrow: bounded list above details.
+- No repeated outer frames, type badges or permanent implementation-limit paragraphs.
+- Right title is the selected qualified object name. Views are Columns / Indexes / SQL; do not concatenate them.
+- Columns use aligned name/type/key/null columns; selected field details expose full type, default and comment.
+- Column filtering is separate from table filtering. Switching views preserves both filters and selection.
+- Use existing terminal background and syntax theme. Highlight only the active pane's selection; inactive selection stays bold.
+- Initial typing searches tables; Enter inspects. SELECT draft and Insert name are explicit actions.
+- Escape from the detail surface restores table search/caret; Escape in table search closes. Show context-specific hints.
+- Standard Tab/Shift+Tab and mouse reach views/actions. Existing j/k and f,/ navigation conventions work outside input fields.
+- Metadata is typed, lazy, bounded, serialized and independent of main transaction/results. Ignore stale responses.
+- SQL view shows actual server definitions; PostgreSQL table CREATE DDL is not fabricated.
+- Verify screenshot/terminal buffer hierarchy as well as geometry, typing, switching, Escape and draft handoff.

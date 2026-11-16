@@ -5,6 +5,8 @@ from __future__ import annotations
 import pymysql
 from pymysql.connections import Connection
 
+from mycli.schema_model import Column, Index, Structure
+
 
 def quote_identifier(value: str) -> str:
     return '`' + value.replace('`', '``') + '`'
@@ -47,9 +49,10 @@ class SchemaMetadata:
         finally:
             connection.close()
 
-    def describe(self, schema: str, name: str) -> str:
+    def describe(self, schema: str, name: str) -> Structure:
         connection = self._connect()
         qualified = f'{quote_identifier(schema)}.{quote_identifier(name)}'
+        result = Structure()
         try:
             with connection.cursor() as cur:
                 cur.execute(
@@ -57,18 +60,38 @@ class SchemaMetadata:
                     'FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION',
                     (schema, name),
                 )
-                lines = [qualified, '', 'Columns']
-                for column, datatype, nullable, key, default, comment in cur.fetchall():
-                    lines.append(f'{column}  {datatype}  {"NULL" if nullable == "YES" else "NOT NULL"}  {key or ""}')
-                    if default is not None:
-                        lines.append(f'  Default: {default}')
-                    if comment:
-                        lines.append(f'  {comment}')
-                cur.execute('SHOW CREATE TABLE ' + qualified)
-                row = cur.fetchone()
-                if row:
-                    lines.extend(['', 'DDL (includes indexes and constraints)', str(row[1])])
-                return '\n'.join(lines)
+                result.columns = [
+                    Column(
+                        str(column),
+                        str(datatype),
+                        nullable == 'YES',
+                        key == 'PRI',
+                        None if default is None else str(default),
+                        str(comment or ''),
+                    )
+                    for column, datatype, nullable, key, default, comment in cur.fetchall()
+                ]
+                cur.execute(
+                    'SELECT INDEX_NAME,NON_UNIQUE,SEQ_IN_INDEX,COLUMN_NAME FROM information_schema.STATISTICS '
+                    'WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX',
+                    (schema, name),
+                )
+                grouped: dict[str, tuple[bool, list[str]]] = {}
+                for index_name, non_unique, _position, column in cur.fetchall():
+                    unique, columns = grouped.setdefault(str(index_name), (not bool(non_unique), []))
+                    columns.append(str(column) if column is not None else '(expression)')
+                result.indexes = [
+                    Index(index_name, f'{"UNIQUE " if unique else ""}({", ".join(columns)})')
+                    for index_name, (unique, columns) in grouped.items()
+                ]
+                try:
+                    cur.execute('SHOW CREATE TABLE ' + qualified)
+                    row = cur.fetchone()
+                    if row:
+                        result.definition = str(row[1])
+                except pymysql.MySQLError:
+                    result.note = 'SQL definition is unavailable with the current permissions.'
+                return result
         finally:
             connection.close()
 
