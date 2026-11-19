@@ -88,6 +88,10 @@ class FileHistoryWithTimestamp(FileHistory):
     :class:`.FileHistory` class that stores all strings in a file with timestamp.
     """
 
+    #: Lines that could carry a password are kept in memory only, unless a
+    #: subclass opts in to storing them.
+    store_credentials = False
+
     def __init__(
         self,
         filename: _StrOrBytesPath,
@@ -159,7 +163,7 @@ class FileHistoryWithTimestamp(FileHistory):
     def append_string(self, string: str) -> None:
         "Add string to the history."
         self._loaded_strings.insert(0, string)
-        if keep_out_of_history(string):
+        if keep_out_of_history(string) and not self.store_credentials:
             return
         self.store_string(string)
         if not self.frecency_history_entries or not self.frecency_refresh_interval:
@@ -212,9 +216,9 @@ class AtuinHistory(FileHistoryWithTimestamp):
 
     Subclasses :class:`FileHistoryWithTimestamp` rather than
     :class:`~prompt_toolkit.history.History` so that everything keyed off that
-    type keeps working: frecency refresh, the ``keep_out_of_history`` filter in
-    :meth:`FileHistoryWithTimestamp.append_string`, the fzf reverse search, and
-    the ``\\#`` rehash hook.
+    type keeps working: frecency refresh, the fzf reverse search, and the
+    ``\\#`` rehash hook. Unlike the file history, lines that carry a password
+    are stored too (:attr:`store_credentials`).
 
     Entries are tagged with an author (``mycli`` by default) so SQL stays
     distinguishable from shell history::
@@ -250,6 +254,9 @@ class AtuinHistory(FileHistoryWithTimestamp):
     :meth:`take_warning` reports that once per session.
     """
 
+    #: Passwords are stored too, in clear text, in atuin's database and, if
+    #: sync is on, in its record store (end-to-end encrypted on the server).
+    store_credentials = True
     #: atuin is a local sqlite read; this only guards against a wedged process.
     TIMEOUT = 5.0
     #: {command} goes last so a tab inside the SQL cannot shift the split.
@@ -305,12 +312,8 @@ class AtuinHistory(FileHistoryWithTimestamp):
         return entries
 
     def store_string(self, string: str) -> None:
-        # append_string() has already dropped lines with credentials and updated
-        # the frecency counters; the filter is repeated for any direct caller.
         # A second prompt in one REPL iteration (\e, \llm) supersedes the first.
         self.finish(0)
-        if keep_out_of_history(string):
-            return
         history_id = self._atuin(
             'history',
             'start',

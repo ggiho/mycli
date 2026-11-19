@@ -169,16 +169,6 @@ def test_a_failed_start_is_not_ended(fake_atuin, history):
     assert [call[2] for call in fake.calls] == ['start']
 
 
-def test_password_changes_are_not_sent_to_atuin(fake_atuin, history):
-    """append_string() inherits the keep_out_of_history filter."""
-    fake = fake_atuin(stdout='id\n')
-    h = history()
-    h.append_string("ALTER USER 'bob' IDENTIFIED BY 'Secret1!'")
-    assert fake.calls == []
-    h.append_string('SELECT 1')
-    assert len(fake.calls) == 1
-
-
 def test_u_builds_results_with_the_fields_sqlresult_actually_has():
     """A live run caught `results=`/`headers=` here after 2.x renamed them."""
     from mycli.packages.special.dbcommands import list_users
@@ -445,12 +435,13 @@ SECRET_LINES = [
 
 
 @pytest.mark.parametrize('line', SECRET_LINES)
-def test_lines_with_credentials_are_not_sent_to_atuin(fake_atuin, history, tmp_path, line):
+def test_lines_with_credentials_are_sent_to_atuin_verbatim(fake_atuin, history, tmp_path, line):
     fake = fake_atuin(stdout='id\n')
     h = history()
     h.append_string(line)
-    h.store_string(line)  # a direct caller is filtered too
-    assert fake.calls == []
+    h.store_string(line)  # a direct caller is stored too
+    starts = [call for call in fake.calls if call[2] == 'start']
+    assert [call[-1] for call in starts] == [line, line]
     assert not (tmp_path / 'hist').exists()
 
 
